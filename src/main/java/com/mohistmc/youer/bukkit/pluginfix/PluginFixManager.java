@@ -49,35 +49,46 @@ public class PluginFixManager {
     // ================== MAIN TELEPORT HANDLER ==================
     
     /**
-     * Enhanced teleportEntityToDungeon - THIS IS THE REPLACEMENT FOR forceTeleport!
-     * Called from MythicDungeons when it wants to teleport a player
+     * Safe teleport wrapper that ensures chunks are loaded
+     * This is called INSTEAD of teleportAsync to fix the async issues
      */
-    public static void teleportEntityToDungeon(Entity entity, Location target) {
-        if (entity == null || target == null || !(entity instanceof Player player)) {
-            return;
+    public static CompletableFuture<Boolean> safeTeleportWithChunkLoad(Entity entity, Location target) {
+        System.out.println("[MythicDungeons] safeTeleportWithChunkLoad called for " + entity.getName() + 
+                          " to " + target.getWorld().getName() + " X:" + target.getBlockX() + 
+                          " Y:" + target.getBlockY() + " Z:" + target.getBlockZ());
+        
+        CompletableFuture<Boolean> future = new CompletableFuture<>();
+        
+        if (entity == null || target == null) {
+            future.complete(false);
+            return future;
         }
         
-        // CRITICAL: Log the coordinates MythicDungeons calculated!
-        System.out.println("[MythicDungeons] forceTeleport intercepted! Target coordinates: " + 
-            "World=" + target.getWorld().getName() + 
-            " X=" + target.getX() + 
-            " Y=" + target.getY() + 
-            " Z=" + target.getZ());
+        // Ensure we're on the main thread for chunk loading
+        if (!Bukkit.isPrimaryThread()) {
+            // Schedule on main thread
+            Bukkit.getScheduler().runTask(getPlugin(), () -> {
+                performChunkLoadAndTeleport(entity, target, future);
+            });
+        } else {
+            // Already on main thread
+            performChunkLoadAndTeleport(entity, target, future);
+        }
         
-        // IMPORTANT: MythicDungeons has already:
-        // 1. Created the dungeon instance
-        // 2. Added player to instance
-        // 3. Calculated the spawn location
-        // 4. Called forceTeleport with the CORRECT coordinates!
-        // 
-        // So we should JUST TELEPORT to the given location!
-        
-        // Wait a bit for chunks to load, then teleport
+        return future;
+    }
+    
+    /**
+     * Perform the actual chunk loading and teleportation
+     */
+    private static void performChunkLoadAndTeleport(Entity entity, Location target, CompletableFuture<Boolean> future) {
         World world = target.getWorld();
         
         // Preload chunks around target
         int chunkX = target.getBlockX() >> 4;
         int chunkZ = target.getBlockZ() >> 4;
+        
+        System.out.println("[MythicDungeons] Loading chunks around chunk (" + chunkX + "," + chunkZ + ")");
         
         for (int x = -2; x <= 2; x++) {
             for (int z = -2; z <= 2; z++) {
@@ -87,22 +98,34 @@ public class PluginFixManager {
             }
         }
         
-        System.out.println("[MythicDungeons] Chunks loaded, teleporting player...");
+        System.out.println("[MythicDungeons] Chunks loaded, performing teleport...");
         
-        // Small delay to let chunks fully load
+        // Small delay to ensure chunks are fully loaded, then teleport
         Bukkit.getScheduler().runTaskLater(getPlugin(), () -> {
-            // Just teleport to the exact location MythicDungeons gave us!
-            boolean success = player.teleport(target);
+            // Use sync teleport
+            boolean success = entity.teleport(target);
             
             if (success) {
-                System.out.println("[MythicDungeons] Successfully teleported " + player.getName() + 
-                    " to dungeon at X=" + target.getBlockX() + " Y=" + target.getBlockY() + " Z=" + target.getBlockZ());
+                System.out.println("[MythicDungeons] Successfully teleported " + entity.getName() + 
+                    " to X:" + target.getBlockX() + " Y:" + target.getBlockY() + " Z:" + target.getBlockZ());
             } else {
-                System.err.println("[MythicDungeons] Failed to teleport " + player.getName());
-                // Fallback: try with safety check
-                performSafeTeleportSimple(player, target);
+                System.err.println("[MythicDungeons] Failed to teleport " + entity.getName());
             }
-        }, 10L); // 0.5 second delay
+            
+            future.complete(success);
+        }, 5L); // 0.25 second delay
+    }
+    
+    /**
+     * DEPRECATED - Kept for compatibility but not used
+     */
+    public static void teleportEntityToDungeon(Entity entity, Location target) {
+        // This method is no longer used since we're not replacing forceTeleport entirely
+        // Instead we're just replacing the teleportAsync call inside it
+        System.out.println("[MythicDungeons] WARNING: teleportEntityToDungeon called (deprecated)");
+        if (entity != null && target != null) {
+            safeTeleportWithChunkLoad(entity, target);
+        }
     }
     
     /**
@@ -949,29 +972,46 @@ public class PluginFixManager {
     }
     
     /**
-     * Patch teleport method to use our implementation
+     * Patch teleport method - DON'T replace it, just wrap it!
      */
     private static void patchTeleportMethod(MethodNode method) {
-        method.instructions.clear();
-        method.tryCatchBlocks.clear();
+        System.out.println("[MythicDungeons] Patching forceTeleport method: " + method.name);
         
-        InsnList newCode = new InsnList();
+        // Don't clear the original code, just add logging before it
+        InsnList preCode = new InsnList();
         
-        // Load parameters
-        newCode.add(new VarInsnNode(Opcodes.ALOAD, 0)); // Entity
-        newCode.add(new VarInsnNode(Opcodes.ALOAD, 1)); // Location
+        // Add logging at the beginning
+        preCode.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        preCode.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
+        preCode.add(new InsnNode(Opcodes.DUP));
+        preCode.add(new LdcInsnNode("[MythicDungeons] forceTeleport called: Entity="));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false));
+        preCode.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/Object;)Ljava/lang/StringBuilder;", false));
+        preCode.add(new LdcInsnNode(" Location="));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        preCode.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/Object;)Ljava/lang/StringBuilder;", false));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
         
-        // Call our method
-        newCode.add(new MethodInsnNode(
-            Opcodes.INVOKESTATIC,
-            Type.getInternalName(PluginFixManager.class),
-            "teleportEntityToDungeon",
-            "(Lorg/bukkit/entity/Entity;Lorg/bukkit/Location;)V",
-            false
-        ));
+        // Insert logging at the beginning
+        method.instructions.insert(preCode);
         
-        newCode.add(new InsnNode(Opcodes.RETURN));
-        method.instructions = newCode;
+        // Find all teleportAsync calls and replace with sync teleport
+        for (AbstractInsnNode insn : method.instructions) {
+            if (insn instanceof MethodInsnNode mInsn) {
+                if (mInsn.name.equals("teleportAsync")) {
+                    // Replace teleportAsync with our safe teleport wrapper
+                    mInsn.owner = Type.getInternalName(PluginFixManager.class);
+                    mInsn.name = "safeTeleportWithChunkLoad";
+                    mInsn.desc = "(Lorg/bukkit/entity/Entity;Lorg/bukkit/Location;)Ljava/util/concurrent/CompletableFuture;";
+                    mInsn.itf = false;
+                    mInsn.setOpcode(Opcodes.INVOKESTATIC);
+                    System.out.println("[MythicDungeons] Replaced teleportAsync with safeTeleportWithChunkLoad");
+                }
+            }
+        }
         
         System.out.println("[MythicDungeons] Patched method: " + method.name);
     }
