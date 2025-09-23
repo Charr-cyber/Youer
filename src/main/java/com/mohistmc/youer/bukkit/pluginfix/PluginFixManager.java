@@ -56,6 +56,13 @@ public class PluginFixManager {
             return;
         }
         
+        // LOG THE ORIGINAL TARGET COORDINATES!
+        System.out.println("[MythicDungeons] ORIGINAL TARGET from forceTeleport: " + 
+            "World=" + target.getWorld().getName() + 
+            " X=" + target.getX() + 
+            " Y=" + target.getY() + 
+            " Z=" + target.getZ());
+        
         World world = target.getWorld();
         String worldName = world.getName();
         DungeonType dungeonType = detectDungeonType(worldName);
@@ -435,8 +442,38 @@ public class PluginFixManager {
      */
     private static void performSafeTeleport(Player player, Location target, DungeonType type) {
         System.out.println("[MythicDungeons] Performing safe teleport for " + player.getName());
+        System.out.println("[MythicDungeons] Using target from forceTeleport: X=" + target.getX() + " Y=" + target.getY() + " Z=" + target.getZ());
         
-        // Find actual dungeon location
+        // IMPORTANT: First check if the original target location is valid!
+        if (target.getY() > 0 && target.getY() < 256) {
+            // The target from MythicDungeons is likely correct, just ensure it's safe
+            System.out.println("[MythicDungeons] Original target seems valid, checking safety...");
+            
+            org.bukkit.block.Block targetBlock = target.getBlock();
+            org.bukkit.block.Block below = target.getWorld().getBlockAt(target.getBlockX(), target.getBlockY() - 1, target.getBlockZ());
+            org.bukkit.block.Block above = target.getWorld().getBlockAt(target.getBlockX(), target.getBlockY() + 1, target.getBlockZ());
+            
+            // If target location is already safe, use it directly
+            if (!below.getType().isAir() && targetBlock.getType().isAir() && above.getType().isAir()) {
+                System.out.println("[MythicDungeons] Original target is safe, using it directly!");
+                boolean success = player.teleport(target);
+                if (success) {
+                    System.out.println("[MythicDungeons] Successfully teleported " + player.getName() + " to dungeon spawn!");
+                    return;
+                }
+            }
+            
+            // If not safe, make it safe
+            Location safeTarget = findSafeGround(target);
+            boolean success = player.teleport(safeTarget);
+            if (success) {
+                System.out.println("[MythicDungeons] Successfully teleported " + player.getName() + " to safe location near target!");
+                return;
+            }
+        }
+        
+        // Fallback: Find dungeon location
+        System.out.println("[MythicDungeons] Original target invalid, searching for dungeon...");
         Location dungeonLocation = findDungeonLocation(target.getWorld(), type);
         if (dungeonLocation == null) {
             dungeonLocation = target;
@@ -723,22 +760,46 @@ public class PluginFixManager {
         int z = location.getBlockZ();
         int startY = location.getBlockY();
         
-        // First, try to find ground below
-        for (int y = startY; y >= 40; y--) {
+        System.out.println("[MythicDungeons] Finding safe ground near Y=" + startY);
+        
+        // Check if current location is already safe
+        if (isSafeGround(world, x, startY - 1, z)) {
+            System.out.println("[MythicDungeons] Current location is already safe!");
+            return new Location(world, x + 0.5, startY, z + 0.5, location.getYaw(), location.getPitch());
+        }
+        
+        // First, try to find ground below (but not too far)
+        for (int y = startY - 1; y >= Math.max(0, startY - 10); y--) {
             if (isSafeGround(world, x, y, z)) {
+                System.out.println("[MythicDungeons] Found safe ground below at Y=" + (y + 1));
                 return new Location(world, x + 0.5, y + 1, z + 0.5, location.getYaw(), location.getPitch());
             }
         }
         
-        // Then try above
-        for (int y = startY + 1; y <= 100; y++) {
+        // Then try above (but not too far)
+        for (int y = startY; y <= Math.min(255, startY + 10); y++) {
             if (isSafeGround(world, x, y, z)) {
+                System.out.println("[MythicDungeons] Found safe ground above at Y=" + (y + 1));
                 return new Location(world, x + 0.5, y + 1, z + 0.5, location.getYaw(), location.getPitch());
             }
         }
         
-        // If no safe ground found, create emergency platform
-        return createEmergencyPlatform(world, x, 70, z);
+        // If no safe ground found nearby, scan wider area
+        System.out.println("[MythicDungeons] No safe ground nearby, scanning wider area...");
+        for (int dx = -3; dx <= 3; dx++) {
+            for (int dz = -3; dz <= 3; dz++) {
+                for (int y = startY - 5; y <= startY + 5; y++) {
+                    if (y >= 0 && y < 256 && isSafeGround(world, x + dx, y, z + dz)) {
+                        System.out.println("[MythicDungeons] Found safe ground at offset (" + dx + "," + dz + ") Y=" + (y + 1));
+                        return new Location(world, x + dx + 0.5, y + 1, z + dz + 0.5, location.getYaw(), location.getPitch());
+                    }
+                }
+            }
+        }
+        
+        // Last resort: create emergency platform at target Y level
+        System.out.println("[MythicDungeons] No safe ground found, creating emergency platform at original Y=" + startY);
+        return createEmergencyPlatform(world, x, startY, z);
     }
     
     /**
