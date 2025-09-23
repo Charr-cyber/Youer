@@ -132,7 +132,7 @@ public class PluginFixManager {
                     chunk.load(true);
                 }
                 // Chunk'ı unload edip tekrar yükleyerek regen'i force et
-                world.unloadChunk(chunk, false);
+                world.unloadChunk(x, z, false);
                 world.loadChunk(x, z, true);
                 System.out.println("[MythicDungeons Debug] Force regenerated chunk (" + x + "," + z + ")");
             }
