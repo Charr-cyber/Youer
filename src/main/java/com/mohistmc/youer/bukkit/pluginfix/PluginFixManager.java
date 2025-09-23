@@ -17,36 +17,44 @@ import static org.objectweb.asm.Opcodes.ARETURN;
 
 public class PluginFixManager {
 
-    // -------------------- TELEPORT --------------------
+    // -------------------- TELEPORT + STRUCTURE GENERATION --------------------
 
     /**
-     * Oyuncuyu dungeon içine güvenli şekilde teleport eder.
-     * NeoForge/CraftBukkit teleportAsync() desteği olmadığı için sync fallback kullanır.
+     * Oyuncuyu dungeon içine güvenli şekilde teleport eder ve yapı oluşturmayı bekler.
      */
     public static void teleportEntityToDungeon(Entity entity, Location target) {
         if (entity == null || target == null) return;
         
-        // Entity Player mı kontrol et
         if (!(entity instanceof Player player)) {
-            return; // Sadece Player'ları teleport et
+            return;
         }
 
-        // Bukkit API sadece ana thread'de güvenli → sync task kullanıyoruz
+        // YOUER OPTIMIZE: Chunk'ı önceden yükle ve yapı oluşturmayı bekle
         Bukkit.getScheduler().runTask(
                 Bukkit.getPluginManager().getPlugin("MythicDungeons"),
                 () -> {
                     try {
-                        // Chunk'ın yüklü olduğundan emin ol
+                        // 1. Target chunk'ı force load et
                         if (!target.getChunk().isLoaded()) {
                             target.getChunk().load();
                         }
                         
-                        // Güvenli sync teleport (Paper flag'leri olmadan)
-                        player.teleport(target);
+                        // 2. Çevredeki chunk'ları da önceden yükle (structure için)
+                        preloadSurroundingChunks(target, 2);
                         
-                        System.out.println("[MythicDungeons Patch] Successfully teleported " + player.getName() + 
-                            " to " + target.getWorld().getName() + " " + 
-                            target.getX() + "," + target.getY() + "," + target.getZ());
+                        // 3. Yapı oluşturma için kısa delay
+                        Bukkit.getScheduler().runTaskLater(
+                            Bukkit.getPluginManager().getPlugin("MythicDungeons"),
+                            () -> {
+                                // 4. Güvenli teleport
+                                player.teleport(target);
+                                
+                                System.out.println("[MythicDungeons Patch] Successfully teleported " + player.getName() + 
+                                    " to dungeon at " + target.getWorld().getName() + " " + 
+                                    target.getX() + "," + target.getY() + "," + target.getZ());
+                            }, 
+                            5L // 5 tick delay (250ms) - yapı oluşturma için
+                        );
                         
                     } catch (Exception e) {
                         System.err.println("[MythicDungeons Patch] Teleport failed for player " + player.getName());
@@ -55,44 +63,80 @@ public class PluginFixManager {
                 }
         );
     }
+    
+    /**
+     * Çevredeki chunk'ları önceden yükler (yapı generation için)
+     */
+    private static void preloadSurroundingChunks(Location center, int radius) {
+        int centerChunkX = center.getChunk().getX();
+        int centerChunkZ = center.getChunk().getZ();
+        
+        for (int x = -radius; x <= radius; x++) {
+            for (int z = -radius; z <= radius; z++) {
+                int chunkX = centerChunkX + x;
+                int chunkZ = centerChunkZ + z;
+                
+                // Async chunk loading - non-blocking
+                center.getWorld().getChunkAtAsync(chunkX, chunkZ, (chunk) -> {
+                    // Chunk yüklendi, hiçbir şey yapmaya gerek yok
+                });
+            }
+        }
+    }
 
     /**
-     * teleportAsync için fake CompletableFuture döndürür (NeoForge uyumluluğu için)
+     * Layout generation timeout'larını düzelt
      */
-    public static CompletableFuture<Boolean> teleportAsyncReplacement(Entity entity, Location location, Object... args) {
-        CompletableFuture<Boolean> future = new CompletableFuture<>();
-        
-        if (!(entity instanceof Player)) {
-            future.complete(false);
-            return future;
-        }
-        
-        // Async görünümlü ama sync çalışan teleport
-        Bukkit.getScheduler().runTask(
-            Bukkit.getPluginManager().getPlugin("MythicDungeons"),
-            () -> {
-                try {
-                    teleportEntityToDungeon(entity, location);
-                    future.complete(true);
-                } catch (Exception e) {
-                    future.complete(false);
+    public static void patchLayoutGeneration(ClassNode node) {
+        for (MethodNode method : node.methods) {
+            if (method.name.equals("generate")) {
+                // Timeout değerlerini artır
+                for (AbstractInsnNode insn : method.instructions) {
+                    if (insn instanceof LdcInsnNode ldcInsn) {
+                        if (ldcInsn.cst instanceof Long timeout && timeout == 5000L) {
+                            // 5 saniye → 30 saniye
+                            ldcInsn.cst = 30000L;
+                            System.out.println("[MythicDungeons Patch] Increased generation timeout to 30s");
+                        }
+                    }
+                    if (insn instanceof IntInsnNode intInsn) {
+                        if (intInsn.operand == 5) {
+                            // 5 saniye → 30 saniye
+                            intInsn.operand = 30;
+                            System.out.println("[MythicDungeons Patch] Increased generation timeout to 30s");
+                        }
+                    }
                 }
             }
-        );
-        
-        return future;
+        }
     }
-
+    
     /**
-     * Geriye uyumluluk için eski metod
+     * CompletableFuture ve ExecutorService async call'larını sync'e çevir
      */
-    @Deprecated
-    public static void teleportPlayerToDungeon(Player player, Location target) {
-        teleportEntityToDungeon(player, target);
+    public static void patchAsyncGeneration(ClassNode node) {
+        for (MethodNode method : node.methods) {
+            for (AbstractInsnNode insn : method.instructions) {
+                if (insn instanceof MethodInsnNode mInsn) {
+                    // ExecutorService.submit() -> sync execution
+                    if (mInsn.owner.contains("ExecutorService") && mInsn.name.equals("submit")) {
+                        // Async submit'i sync çağrıya çevir
+                        mInsn.owner = "java/util/concurrent/Callable";
+                        mInsn.name = "call";
+                        System.out.println("[MythicDungeons Patch] Converted async generation to sync");
+                    }
+                    
+                    // CompletableFuture.get() timeout'ları düzelt
+                    if (mInsn.owner.equals("java/util/concurrent/CompletableFuture") && mInsn.name.equals("get")) {
+                        System.out.println("[MythicDungeons Patch] Found CompletableFuture.get() call");
+                    }
+                }
+            }
+        }
     }
 
     /**
-     * ASM patch: MythicDungeons Util sınıfındaki teleport metodlarını patch'ler.
+     * ASM patch: MythicDungeons Util ve Layout sınıflarını patch'ler.
      */
     public static void patchDungeonTeleport(ClassNode node) {
         boolean patchedAny = false;
@@ -128,7 +172,6 @@ public class PluginFixManager {
      * Method'u tamamen replacement ile patch'ler
      */
     private static void patchMethod(MethodNode method, String methodName) {
-        // Method'ın tamamını sil ve yenisini koy
         method.instructions.clear();
         method.tryCatchBlocks.clear();
         
@@ -147,10 +190,7 @@ public class PluginFixManager {
             false
         ));
         
-        // Return
         newCode.add(new InsnNode(Opcodes.RETURN));
-        
-        // Yeni kodu method'a ata
         method.instructions = newCode;
         
         System.out.println("[MythicDungeons Patch] Patched method: " + methodName);
@@ -162,14 +202,11 @@ public class PluginFixManager {
     private static void patchTeleportAsyncCalls(MethodNode method) {
         for (AbstractInsnNode insn : method.instructions) {
             if (insn instanceof MethodInsnNode mInsn) {
-                // teleportAsync çağrısını yakala
                 if (mInsn.name.equals("teleportAsync") && 
                     (mInsn.owner.equals("org/bukkit/entity/Entity") || 
                      mInsn.owner.equals("org/bukkit/entity/Player"))) {
                     
-                    // teleportAsync -> teleport olarak değiştir
                     mInsn.name = "teleport";
-                    // Sadece Location parametresini al (diğer parametreleri ignore et)
                     mInsn.desc = "(Lorg/bukkit/Location;)Z";
                     
                     System.out.println("[MythicDungeons Patch] Replaced teleportAsync call with teleport");
@@ -201,10 +238,21 @@ public class PluginFixManager {
             case "com.onarandombox.MultiverseCore.utils.WorldManager" -> {
                 return patch(clazz, MultiverseCore::fix);
             }
-            // MythicDungeons patch - DOĞRU CLASS
+            // MythicDungeons patch - TELEPORT FIX
             case "net.playavalon.mythicdungeons.utility.helpers.Util" -> {
                 System.out.println("[MythicDungeons Patch] Patching Util class for teleport fixes...");
                 return patch(clazz, PluginFixManager::patchDungeonTeleport);
+            }
+            // MythicDungeons patch - LAYOUT GENERATION FIX
+            case "net.playavalon.mythicdungeons.api.generation.layout.Layout" -> {
+                System.out.println("[MythicDungeons Patch] Patching Layout generation...");
+                return patch(clazz, PluginFixManager::patchLayoutGeneration);
+            }
+            // MythicDungeons patch - ASYNC GENERATION FIX
+            case "net.playavalon.mythicdungeons.api.generation.layout.LayoutBranching",
+                 "net.playavalon.mythicdungeons.api.generation.layout.LayoutMinecrafty" -> {
+                System.out.println("[MythicDungeons Patch] Patching async generation...");
+                return patch(clazz, PluginFixManager::patchAsyncGeneration);
             }
         }
 
@@ -245,7 +293,7 @@ public class PluginFixManager {
         return patcher == null ? clazz : patch(clazz, patcher);
     }
 
-    // -------------------- ASM HELPER (Aynı) --------------------
+    // -------------------- ASM HELPER --------------------
 
     private static void removePaper(ClassNode node) {
         for (MethodNode methodNode : node.methods) {
@@ -276,7 +324,7 @@ public class PluginFixManager {
         } catch (Exception e) {
             System.err.println("[PluginFixManager] Failed to patch class: " + e.getMessage());
             e.printStackTrace();
-            return basicClass; // Patch başarısızsa orijinali döndür
+            return basicClass;
         }
     }
 
