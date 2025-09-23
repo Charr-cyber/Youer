@@ -115,39 +115,48 @@ public class PluginFixManager {
         // Send status to player
         player.sendMessage("§e[MythicDungeons] §7Preparing dungeon world...");
         
-        CompletableFuture<Boolean> generationFuture = CompletableFuture
-            .supplyAsync(() -> preloadDungeonWorld(target.getWorld(), type), generationExecutor)
-            .thenCompose(preloaded -> {
-                if (!preloaded) {
-                    return CompletableFuture.completedFuture(false);
-                }
-                dungeonStates.put(worldName, DungeonGenerationState.GENERATING);
-                player.sendMessage("§e[MythicDungeons] §7Generating dungeon structures...");
-                return generateDungeonStructures(target.getWorld(), type);
-            })
-            .thenApply(generated -> {
-                if (generated) {
-                    dungeonStates.put(worldName, DungeonGenerationState.READY);
-                    player.sendMessage("§a[MythicDungeons] §7Dungeon ready!");
-                } else {
-                    dungeonStates.put(worldName, DungeonGenerationState.FAILED);
-                    player.sendMessage("§c[MythicDungeons] §7Failed to generate dungeon!");
-                }
-                return generated;
-            });
-        
-        generationFutures.put(worldName, generationFuture);
-        
-        // Handle completion
-        generationFuture.whenComplete((success, error) -> {
-            generationFutures.remove(worldName);
-            if (success && error == null) {
-                Bukkit.getScheduler().runTask(getPlugin(), () -> {
-                    performSafeTeleport(player, target, type);
-                });
-            } else {
-                handleGenerationFailure(player, target, error);
+        // First, preload chunks in main thread
+        Bukkit.getScheduler().runTask(getPlugin(), () -> {
+            boolean preloaded = preloadDungeonWorld(target.getWorld(), type);
+            
+            if (!preloaded) {
+                dungeonStates.put(worldName, DungeonGenerationState.FAILED);
+                player.sendMessage("§c[MythicDungeons] §7Failed to preload world!");
+                handleGenerationFailure(player, target, null);
+                return;
             }
+            
+            // Now continue with async generation
+            dungeonStates.put(worldName, DungeonGenerationState.GENERATING);
+            player.sendMessage("§e[MythicDungeons] §7Generating dungeon structures...");
+            
+            CompletableFuture<Boolean> generationFuture = generateDungeonStructures(target.getWorld(), type)
+                .thenApply(generated -> {
+                    if (generated) {
+                        dungeonStates.put(worldName, DungeonGenerationState.READY);
+                        player.sendMessage("§a[MythicDungeons] §7Dungeon ready!");
+                    } else {
+                        dungeonStates.put(worldName, DungeonGenerationState.FAILED);
+                        player.sendMessage("§c[MythicDungeons] §7Failed to generate dungeon!");
+                    }
+                    return generated;
+                });
+            
+            generationFutures.put(worldName, generationFuture);
+            
+            // Handle completion
+            generationFuture.whenComplete((success, error) -> {
+                generationFutures.remove(worldName);
+                if (success && error == null) {
+                    Bukkit.getScheduler().runTask(getPlugin(), () -> {
+                        performSafeTeleport(player, target, type);
+                    });
+                } else {
+                    Bukkit.getScheduler().runTask(getPlugin(), () -> {
+                        handleGenerationFailure(player, target, error);
+                    });
+                }
+            });
         });
     }
     
@@ -165,29 +174,42 @@ public class PluginFixManager {
                         performSafeTeleport(player, target, type);
                     });
                 } else {
-                    handleGenerationFailure(player, target, error);
+                    Bukkit.getScheduler().runTask(getPlugin(), () -> {
+                        handleGenerationFailure(player, target, error);
+                    });
                 }
             });
+        } else {
+            // No existing generation, start new one
+            initiateGenerationAndTeleport(player, target, worldName, type);
         }
     }
     
     /**
      * Preload dungeon world with proper chunk loading strategy
+     * MUST be called from main thread!
      */
     private static boolean preloadDungeonWorld(World world, DungeonType type) {
         try {
+            // Ensure we're on main thread
+            if (!Bukkit.isPrimaryThread()) {
+                System.err.println("[MythicDungeons] ERROR: preloadDungeonWorld called from async thread!");
+                return false;
+            }
+            
             System.out.println("[MythicDungeons] Preloading world: " + world.getName() + " (Type: " + type + ")");
             
             // Calculate chunk loading radius based on dungeon type
             int radius = switch (type) {
-                case PROCEDURAL -> 15;  // Large radius for procedural dungeons
-                case INSTANCED -> 10;   // Medium radius for instances
+                case PROCEDURAL -> 10;  // Reduced for performance
+                case INSTANCED -> 7;    // Medium radius for instances
                 case CLASSIC -> 5;      // Small radius for classic dungeons
             };
             
-            // Force load chunks synchronously for stability
+            // Force load chunks synchronously (we're on main thread)
             int centerChunkX = 0;
             int centerChunkZ = 0;
+            int loadedCount = 0;
             
             for (int x = -radius; x <= radius; x++) {
                 for (int z = -radius; z <= radius; z++) {
@@ -196,11 +218,13 @@ public class PluginFixManager {
                     
                     if (!world.isChunkLoaded(chunkX, chunkZ)) {
                         world.loadChunk(chunkX, chunkZ, true);
+                        loadedCount++;
                         
-                        // Add small delay for procedural dungeons to allow generation
-                        if (type == DungeonType.PROCEDURAL) {
+                        // For procedural dungeons, yield occasionally to prevent freezing
+                        if (type == DungeonType.PROCEDURAL && loadedCount % 10 == 0) {
+                            // Let other tasks run briefly
                             try {
-                                Thread.sleep(50);
+                                Thread.sleep(1);
                             } catch (InterruptedException e) {
                                 Thread.currentThread().interrupt();
                             }
@@ -209,7 +233,7 @@ public class PluginFixManager {
                 }
             }
             
-            System.out.println("[MythicDungeons] Preloaded " + ((radius * 2 + 1) * (radius * 2 + 1)) + " chunks");
+            System.out.println("[MythicDungeons] Preloaded " + loadedCount + " chunks");
             return true;
             
         } catch (Exception e) {
