@@ -71,7 +71,7 @@ public class PluginFixManager {
     }
     
     /**
-     * MANUAL olarak dungeon generation'ı trigger et - ChunkGenerator'ı force çağır
+     * MANUAL olarak dungeon generation'ı trigger et - REAL MythicDungeons ChunkGenerator bul
      */
     private static void manuallyTriggerDungeonGeneration(org.bukkit.World world) {
         System.out.println("[MythicDungeons Debug] MANUALLY triggering dungeon generation for world: " + world.getName());
@@ -80,15 +80,27 @@ public class PluginFixManager {
             // World'un ChunkGenerator'ini al
             org.bukkit.generator.ChunkGenerator generator = world.getGenerator();
             if (generator == null) {
-                System.out.println("[MythicDungeons Debug] No custom ChunkGenerator found - using Bukkit force generation");
-                forceBukkitChunkGeneration(world);
+                System.out.println("[MythicDungeons Debug] No custom ChunkGenerator found - trying alternative methods");
+                tryAlternativeDungeonGeneration(world);
                 return;
             }
             
             System.out.println("[MythicDungeons Debug] Found ChunkGenerator: " + generator.getClass().getName());
             
-            // Eğer MythicDungeons ChunkGenerator'ıysa, manual olarak critical chunk'ları regen et
-            if (generator.getClass().getName().contains("DungeonChunkGenerator")) {
+            // Eğer Youer'in FlatGenerator'ı kullanılıyorsa, MythicDungeons'in REAL generator'ını bul
+            if (generator.getClass().getName().contains("FlatGenerator")) {
+                System.out.println("[MythicDungeons Debug] Detected Youer FlatGenerator - searching for REAL MythicDungeons generator...");
+                
+                // MythicDungeons plugin'inden direkt ChunkGenerator al
+                org.bukkit.plugin.Plugin mythicPlugin = org.bukkit.Bukkit.getPluginManager().getPlugin("MythicDungeons");
+                if (mythicPlugin != null) {
+                    System.out.println("[MythicDungeons Debug] Found MythicDungeons plugin - attempting direct generation trigger");
+                    triggerRealDungeonGeneration(world, mythicPlugin);
+                } else {
+                    System.out.println("[MythicDungeons Debug] MythicDungeons plugin not found - using alternative");
+                    tryAlternativeDungeonGeneration(world);
+                }
+            } else if (generator.getClass().getName().contains("DungeonChunkGenerator")) {
                 System.out.println("[MythicDungeons Debug] Detected DungeonChunkGenerator - forcing chunk regeneration");
                 
                 // Critical dungeon chunk'larını yeniden generate et
@@ -108,14 +120,85 @@ public class PluginFixManager {
                 System.out.println("[MythicDungeons Debug] Manual chunk generation completed!");
             } else {
                 System.out.println("[MythicDungeons Debug] Unknown ChunkGenerator type: " + generator.getClass().getName());
-                forceBukkitChunkGeneration(world);
+                tryAlternativeDungeonGeneration(world);
             }
             
         } catch (Exception e) {
             System.err.println("[MythicDungeons Debug] Manual generation failed: " + e.getMessage());
             e.printStackTrace();
-            forceBukkitChunkGeneration(world);
+            tryAlternativeDungeonGeneration(world);
         }
+    }
+    
+    /**
+     * MythicDungeons plugin'inden direkt generation trigger et
+     */
+    private static void triggerRealDungeonGeneration(org.bukkit.World world, org.bukkit.plugin.Plugin mythicPlugin) {
+        System.out.println("[MythicDungeons Debug] Triggering REAL dungeon generation via MythicDungeons plugin");
+        
+        try {
+            // MythicDungeons plugin'in structure placement sistem'ini trigger etmeye çalış
+            // Reflection kullanarak plugin'in internal API'sine eriş
+            Class<?> pluginClass = mythicPlugin.getClass();
+            System.out.println("[MythicDungeons Debug] MythicDungeons main class: " + pluginClass.getName());
+            
+            // Basit yaklaşım: world'de structure generation''ı force trigger et
+            forceStructureGeneration(world);
+            
+        } catch (Exception e) {
+            System.err.println("[MythicDungeons Debug] Direct plugin trigger failed: " + e.getMessage());
+            e.printStackTrace();
+            forceStructureGeneration(world);
+        }
+    }
+    
+    /**
+     * Structure generation''ı direct trigger et
+     */
+    private static void forceStructureGeneration(org.bukkit.World world) {
+        System.out.println("[MythicDungeons Debug] Force triggering structure generation in world: " + world.getName());
+        
+        // Spawn area'da structure placement''ı force et
+        for (int x = -2; x <= 2; x++) {
+            for (int z = -2; z <= 2; z++) {
+                org.bukkit.Chunk chunk = world.getChunkAt(x, z);
+                
+                // Chunk''ı unload/reload ederek structure generation''ı trigger et
+                if (chunk.isLoaded()) {
+                    // Önce unload
+                    world.unloadChunk(x, z, false);
+                    System.out.println("[MythicDungeons Debug] Unloaded chunk (" + x + "," + z + ")");
+                    
+                    // Sonra reload with generate=true
+                    world.loadChunk(x, z, true);
+                    System.out.println("[MythicDungeons Debug] Reloaded chunk (" + x + "," + z + ") with generation");
+                    
+                    // Chunk''ın populate edilmesini bekle
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+        }
+        
+        System.out.println("[MythicDungeons Debug] Structure generation trigger completed!");
+    }
+    
+    /**
+     * Alternative dungeon generation methods
+     */
+    private static void tryAlternativeDungeonGeneration(org.bukkit.World world) {
+        System.out.println("[MythicDungeons Debug] Trying alternative dungeon generation methods");
+        
+        // Method 1: Force structure generation
+        forceStructureGeneration(world);
+        
+        // Method 2: Bukkit chunk regeneration
+        forceBukkitChunkGeneration(world);
+        
+        System.out.println("[MythicDungeons Debug] Alternative generation methods completed");
     }
     
     /**
@@ -433,7 +516,7 @@ public class PluginFixManager {
     }
     
     /**
-     * Fallback location stratejileri
+     * Fallback location stratejileri - EMERGENCY BLOCK PLACEMENT
      */
     private static Location useFallbackLocation(org.bukkit.World world) {
         System.out.println("[MythicDungeons Debug] Using fallback location strategies...");
@@ -451,11 +534,52 @@ public class PluginFixManager {
             }
         }
         
-        // 2. Son çare: spawn noktasından uzak, güvenli bir yer
+        // 2. EMERGENCY: Manuel olarak güvenli platform oluştur
+        System.out.println("[MythicDungeons Debug] Creating EMERGENCY safe platform for teleport...");
+        Location emergencyLoc = createEmergencyPlatform(world, 10, 70, 10);
+        if (emergencyLoc != null) {
+            return emergencyLoc;
+        }
+        
+        // 3. Son çare: spawn noktasından uzak, güvenli bir yer
         System.out.println("[MythicDungeons Debug] Could not find dungeon center, using safe fallback location");
         org.bukkit.Location fallback = new org.bukkit.Location(world, 100, 70, 100);
         world.loadChunk(fallback.getChunk());
         return fallback;
+    }
+    
+    /**
+     * Emergency platform oluştur - kesinlikle güvenli bir yer sağla
+     */
+    private static Location createEmergencyPlatform(org.bukkit.World world, int x, int y, int z) {
+        System.out.println("[MythicDungeons Debug] Creating emergency platform at (" + x + "," + y + "," + z + ")");
+        
+        try {
+            // 5x5 platform oluştur
+            for (int dx = -2; dx <= 2; dx++) {
+                for (int dz = -2; dz <= 2; dz++) {
+                    // Floor block
+                    org.bukkit.block.Block floorBlock = world.getBlockAt(x + dx, y, z + dz);
+                    floorBlock.setType(org.bukkit.Material.STONE);
+                    
+                    // Üstündeki 2 block'u air yap
+                    world.getBlockAt(x + dx, y + 1, z + dz).setType(org.bukkit.Material.AIR);
+                    world.getBlockAt(x + dx, y + 2, z + dz).setType(org.bukkit.Material.AIR);
+                }
+            }
+            
+            // Merkez noktaya torch ekle (görsel referans için)
+            org.bukkit.block.Block torchBlock = world.getBlockAt(x, y + 1, z);
+            torchBlock.setType(org.bukkit.Material.TORCH);
+            
+            System.out.println("[MythicDungeons Debug] Emergency platform created successfully!");
+            return new org.bukkit.Location(world, x + 0.5, y + 1.5, z + 0.5);
+            
+        } catch (Exception e) {
+            System.err.println("[MythicDungeons Debug] Failed to create emergency platform: " + e.getMessage());
+            e.printStackTrace();
+            return null;
+        }
     }
     
     /**
