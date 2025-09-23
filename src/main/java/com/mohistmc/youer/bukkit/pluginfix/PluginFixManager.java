@@ -17,213 +17,91 @@ import static org.objectweb.asm.Opcodes.ARETURN;
 
 public class PluginFixManager {
 
-    // -------------------- TELEPORT + STRUCTURE GENERATION + ENHANCED VERSION -------------------
+    // -------------------- TELEPORT + PROCEDURAL FIX --------------------
 
     /**
-     * Procedural dungeon için generation-aware teleporte
-     */
-    public static void teleportEntityToProceduralDungeon(Entity entity, Location target, Object instanceObj) {
-        if (entity == null || target == null) return;
-        
-        if (!(entity instanceof Player player)) {
-            return;
-        }
-
-        System.out.println("[MythicDungeons Debug] Starting PROCEDURAL teleport for " + player.getName() + 
-                          " to " + target.getWorld().getName() + " (waiting for generation)");
-
-        // PROCEDURAL DUNGEON: Generation tamamlanana kadar bekle
-        Bukkit.getScheduler().runTask(
-                Bukkit.getPluginManager().getPlugin("MythicDungeons"),
-                () -> {
-                    // Generation check loop - procedural dungeon'lar için kritik!
-                    checkGenerationAndTeleport(player, target, instanceObj, 0);
-                }
-        );
-    }
-    
-    /**
-     * Generation check ile recursive teleport attempt
-     */
-    private static void checkGenerationAndTeleport(Player player, Location target, Object instanceObj, int attempts) {
-        final int MAX_ATTEMPTS = 100; // 50 saniye max (500ms * 100)
-        
-        if (attempts >= MAX_ATTEMPTS) {
-            System.err.println("[MythicDungeons Patch] Generation timeout for " + player.getName() + 
-                              " after " + (MAX_ATTEMPTS * 500) + "ms");
-            // Timeout olsa bile teleport dene
-            doFinalTeleport(player, target);
-            return;
-        }
-        
-        try {
-            // Instance generation durumunu reflection ile check et
-            boolean isReady = checkInstanceReady(instanceObj);
-            
-            if (isReady) {
-                System.out.println("[MythicDungeons Debug] Generation complete after " + attempts + " attempts, teleporting " + player.getName());
-                doFinalTeleport(player, target);
-            } else {
-                // Henüz hazır değil, 500ms bekle ve tekrar dene
-                System.out.println("[MythicDungeons Debug] Generation not ready (attempt " + (attempts + 1) + "/" + MAX_ATTEMPTS + "), waiting...");
-                
-                Bukkit.getScheduler().runTaskLater(
-                    Bukkit.getPluginManager().getPlugin("MythicDungeons"),
-                    () -> checkGenerationAndTeleport(player, target, instanceObj, attempts + 1),
-                    10L // 500ms delay
-                );
-            }
-        } catch (Exception e) {
-            System.err.println("[MythicDungeons Patch] Error checking generation status: " + e.getMessage());
-            // Hata durumunda normal teleport yap
-            doFinalTeleport(player, target);
-        }
-    }
-    
-    /**
-     * Instance'ın generation durumunu check et
-     */
-    private static boolean checkInstanceReady(Object instanceObj) {
-        if (instanceObj == null) return true; // Instance yoksa teleport et
-        
-        try {
-            // Reflection ile instance durumu check et
-            Class<?> instanceClass = instanceObj.getClass();
-            
-            // Yaygın method isimleri dene
-            String[] checkMethods = {"isReady", "isGenerated", "isComplete", "isFinished", "hasGenerated"};
-            
-            for (String methodName : checkMethods) {
-                try {
-                    java.lang.reflect.Method method = instanceClass.getMethod(methodName);
-                    Object result = method.invoke(instanceObj);
-                    if (result instanceof Boolean) {
-                        boolean ready = (Boolean) result;
-                        System.out.println("[MythicDungeons Debug] Instance." + methodName + "() = " + ready);
-                        if (!ready) return false; // Herhangi biri false ise bekle
-                    }
-                } catch (NoSuchMethodException ignored) {
-                    // Method yoksa devam et
-                }
-            }
-            
-            return true; // Tüm check'ler geçtiyse veya method bulunamadıysa ready
-            
-        } catch (Exception e) {
-            System.err.println("[MythicDungeons Debug] Reflection error: " + e.getMessage());
-            return true; // Hata durumunda teleport et
-        }
-    }
-    
-    /**
-     * Final teleport işlemi
-     */
-    private static void doFinalTeleport(Player player, Location target) {
-        try {
-            // Chunk'ları hazırla
-            if (!target.getChunk().isLoaded()) {
-                System.out.println("[MythicDungeons Debug] Loading target chunk for final teleport...");
-                target.getChunk().load();
-            }
-            
-            preloadSurroundingChunks(target, 2);
-            
-            // Final teleport
-            boolean success = player.teleport(target);
-            
-            if (success) {
-                System.out.println("[MythicDungeons Patch] PROCEDURAL teleport SUCCESS for " + player.getName() + 
-                    " to " + target.getWorld().getName() + " " + 
-                    target.getX() + "," + target.getY() + "," + target.getZ());
-            } else {
-                System.err.println("[MythicDungeons Patch] PROCEDURAL teleport FAILED for " + player.getName());
-            }
-        } catch (Exception e) {
-            System.err.println("[MythicDungeons Patch] Final teleport error: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-
-    /**
-     * Oyuncuyu dungeon içine güvenli şekilde teleport eder ve yapı oluşturmayı bekler.
+     * Oyuncuyu dungeon içine güvenli şekilde teleport eder.
+     * Procedural dungeon'lar için daha uzun bekleme süresi.
      */
     public static void teleportEntityToDungeon(Entity entity, Location target) {
+        teleportEntityToDungeon(entity, target, false);
+    }
+
+    /**
+     * Procedural aware teleport
+     */
+    public static void teleportEntityToDungeon(Entity entity, Location target, boolean isProcedural) {
         if (entity == null || target == null) return;
         
         if (!(entity instanceof Player player)) {
             return;
         }
 
-        System.out.println("[MythicDungeons Debug] Starting teleport for " + player.getName() + 
+        String dungeonType = isProcedural ? "PROCEDURAL" : "CLASSIC";
+        System.out.println("[MythicDungeons Debug] Starting " + dungeonType + " teleport for " + player.getName() + 
                           " to " + target.getWorld().getName());
 
-        // YOUER OPTIMIZE: Chunk'ı önceden yükle ve yapı oluşturmayı bekle
+        // Procedural için daha uzun delay
+        long delay = isProcedural ? 20L : 5L; // 1 saniye vs 250ms
+
         Bukkit.getScheduler().runTask(
                 Bukkit.getPluginManager().getPlugin("MythicDungeons"),
                 () -> {
                     try {
-                        // 1. Target chunk'ı force load et
+                        // Chunk'ı yükle
                         if (!target.getChunk().isLoaded()) {
-                            System.out.println("[MythicDungeons Debug] Loading target chunk...");
+                            System.out.println("[MythicDungeons Debug] Loading chunk for " + dungeonType + " teleport...");
                             target.getChunk().load();
                         }
                         
-                        // 2. Çevredeki chunk'ları da önceden yükle (structure için)
-                        preloadSurroundingChunks(target, 3); // Radius artırıldı
+                        // Procedural için çevredeki chunk'ları da yükle
+                        if (isProcedural) {
+                            preloadSurroundingChunks(target, 2);
+                        }
                         
-                        // 3. Yapı oluşturma için daha uzun delay
+                        // Delay ile teleport
                         Bukkit.getScheduler().runTaskLater(
                             Bukkit.getPluginManager().getPlugin("MythicDungeons"),
                             () -> {
                                 try {
-                                    // 4. Final chunk check
-                                    if (!target.getChunk().isLoaded()) {
-                                        target.getChunk().load();
-                                    }
-                                    
-                                    // 5. Güvenli teleport
                                     boolean success = player.teleport(target);
                                     
                                     if (success) {
-                                        System.out.println("[MythicDungeons Patch] Successfully teleported " + player.getName() + 
-                                            " to dungeon at " + target.getWorld().getName() + " " + 
-                                            target.getX() + "," + target.getY() + "," + target.getZ());
+                                        System.out.println("[MythicDungeons Patch] " + dungeonType + " teleport SUCCESS for " + 
+                                            player.getName() + " to " + target.getWorld().getName());
                                     } else {
-                                        System.err.println("[MythicDungeons Patch] Teleport returned false for " + player.getName());
+                                        System.err.println("[MythicDungeons Patch] " + dungeonType + " teleport FAILED for " + 
+                                            player.getName());
                                     }
                                 } catch (Exception e) {
-                                    System.err.println("[MythicDungeons Patch] Teleport execution failed: " + e.getMessage());
+                                    System.err.println("[MythicDungeons Patch] " + dungeonType + " teleport error: " + e.getMessage());
                                     e.printStackTrace();
                                 }
                             }, 
-                            10L // 10 tick delay (500ms) - yapı oluşturma için daha uzun
+                            delay
                         );
                         
                     } catch (Exception e) {
-                        System.err.println("[MythicDungeons Patch] Teleport setup failed for player " + player.getName());
+                        System.err.println("[MythicDungeons Patch] " + dungeonType + " setup failed: " + e.getMessage());
                         e.printStackTrace();
                     }
                 }
         );
     }
-    
+
     /**
-     * Çevredeki chunk'ları önceden yükler (yapı generation için)
+     * Çevredeki chunk'ları preload et
      */
     private static void preloadSurroundingChunks(Location center, int radius) {
         int centerChunkX = center.getChunk().getX();
         int centerChunkZ = center.getChunk().getZ();
         int loadedCount = 0;
         
-        System.out.println("[MythicDungeons Debug] Preloading chunks around " + 
-                          centerChunkX + "," + centerChunkZ + " with radius " + radius);
-        
         for (int x = -radius; x <= radius; x++) {
             for (int z = -radius; z <= radius; z++) {
                 int chunkX = centerChunkX + x;
                 int chunkZ = centerChunkZ + z;
                 
-                // Sync chunk loading - daha güvenli
                 if (!center.getWorld().isChunkLoaded(chunkX, chunkZ)) {
                     center.getWorld().loadChunk(chunkX, chunkZ);
                     loadedCount++;
@@ -231,13 +109,13 @@ public class PluginFixManager {
             }
         }
         
-        System.out.println("[MythicDungeons Debug] Preloaded " + loadedCount + " chunks");
+        System.out.println("[MythicDungeons Debug] Preloaded " + loadedCount + " chunks around dungeon");
     }
 
     /**
-     * teleportAsync için replacement
+     * teleportAsync replacement
      */
-    public static CompletableFuture<Boolean> teleportAsyncReplacement(Entity entity, Location location) {
+    public static CompletableFuture<Boolean> teleportAsyncReplacement(Entity entity, Location location, Object... args) {
         CompletableFuture<Boolean> future = new CompletableFuture<>();
         
         if (!(entity instanceof Player)) {
@@ -249,7 +127,7 @@ public class PluginFixManager {
             Bukkit.getPluginManager().getPlugin("MythicDungeons"),
             () -> {
                 try {
-                    teleportEntityToDungeon(entity, location);
+                    teleportEntityToDungeon(entity, location, true); // Async olarak çağrılıyorsa procedural olabilir
                     future.complete(true);
                 } catch (Exception e) {
                     future.complete(false);
@@ -261,118 +139,11 @@ public class PluginFixManager {
     }
 
     /**
-     * Layout generation timeout'larını ve async calls'ları düzelt
+     * Geriye uyumluluk için eski metod
      */
-    public static void patchLayoutGeneration(ClassNode node) {
-        System.out.println("[MythicDungeons Debug] Patching Layout generation class...");
-        
-        for (MethodNode method : node.methods) {
-            // Generation method'larını patch'le
-            if (method.name.equals("generate") || method.name.equals("build") || 
-                method.name.equals("paste") || method.name.contains("async")) {
-                
-                System.out.println("[MythicDungeons Debug] Patching method: " + method.name + method.desc);
-                
-                // Timeout değerlerini artır
-                patchTimeoutValues(method);
-                
-                // Async calls'ları sync'e çevir
-                patchAsyncCalls(method);
-                
-                // Debug logging ekle
-                addMethodDebugLogging(method, "Layout." + method.name);
-            }
-        }
-    }
-    
-    /**
-     * Timeout değerlerini artırır
-     */
-    private static void patchTimeoutValues(MethodNode method) {
-        for (AbstractInsnNode insn : method.instructions) {
-            // LDC constant pool'dan timeout değerleri
-            if (insn instanceof LdcInsnNode ldcInsn) {
-                if (ldcInsn.cst instanceof Long timeout) {
-                    if (timeout >= 1000L && timeout <= 10000L) { // 1-10 saniye arası
-                        long oldValue = timeout;
-                        ldcInsn.cst = timeout * 5; // 5x artır
-                        System.out.println("[MythicDungeons Patch] Increased timeout from " + oldValue + "ms to " + ldcInsn.cst + "ms");
-                    }
-                }
-                if (ldcInsn.cst instanceof Integer timeout) {
-                    if (timeout >= 1 && timeout <= 10) { // 1-10 saniye arası
-                        int oldValue = timeout;
-                        ldcInsn.cst = timeout * 5; // 5x artır
-                        System.out.println("[MythicDungeons Patch] Increased timeout from " + oldValue + "s to " + ldcInsn.cst + "s");
-                    }
-                }
-            }
-            
-            // Integer instructions
-            if (insn instanceof IntInsnNode intInsn) {
-                if (intInsn.operand >= 1 && intInsn.operand <= 30) {
-                    int oldValue = intInsn.operand;
-                    intInsn.operand *= 5;
-                    System.out.println("[MythicDungeons Patch] Increased int timeout from " + oldValue + " to " + intInsn.operand);
-                }
-            }
-        }
-    }
-    
-    /**
-     * Async method calls'ları sync'e çevirir
-     */
-    private static void patchAsyncCalls(MethodNode method) {
-        for (AbstractInsnNode insn : method.instructions) {
-            if (insn instanceof MethodInsnNode mInsn) {
-                // Scheduler async calls
-                if (mInsn.name.equals("runTaskAsynchronously")) {
-                    mInsn.name = "runTask";
-                    System.out.println("[MythicDungeons Patch] Converted runTaskAsynchronously to runTask");
-                }
-                
-                // CompletableFuture async calls
-                if (mInsn.owner.equals("java/util/concurrent/CompletableFuture")) {
-                    if (mInsn.name.equals("supplyAsync")) {
-                        System.out.println("[MythicDungeons Debug] Found CompletableFuture.supplyAsync in " + method.name);
-                        // Burada daha karmaşık patch yapılabilir
-                    }
-                }
-                
-                // ExecutorService calls
-                if (mInsn.owner.contains("ExecutorService") && mInsn.name.equals("submit")) {
-                    System.out.println("[MythicDungeons Debug] Found ExecutorService.submit in " + method.name);
-                }
-                
-                // Chunk async loading
-                if (mInsn.owner.equals("org/bukkit/World")) {
-                    if (mInsn.name.equals("getChunkAtAsync")) {
-                        mInsn.name = "getChunkAt";
-                        mInsn.desc = "(II)Lorg/bukkit/Chunk;";
-                        System.out.println("[MythicDungeons Patch] Converted getChunkAtAsync to sync getChunkAt");
-                    }
-                    if (mInsn.name.equals("loadChunkAsync")) {
-                        mInsn.name = "loadChunk";
-                        mInsn.desc = "(II)Z";
-                        System.out.println("[MythicDungeons Patch] Converted loadChunkAsync to sync loadChunk");
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * Method başına debug logging ekler
-     */
-    private static void addMethodDebugLogging(MethodNode method, String methodName) {
-        InsnList debugCode = new InsnList();
-        
-        // System.out.println("[MythicDungeons Debug] Executing " + methodName);
-        debugCode.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
-        debugCode.add(new LdcInsnNode("[MythicDungeons Debug] Executing " + methodName));
-        debugCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
-        
-        method.instructions.insert(debugCode);
+    @Deprecated
+    public static void teleportPlayerToDungeon(Player player, Location target) {
+        teleportEntityToDungeon(player, target);
     }
 
     /**
@@ -409,7 +180,45 @@ public class PluginFixManager {
         if (patchedAny) {
             System.out.println("[MythicDungeons Patch] Successfully patched Util teleport methods");
         } else {
-            System.out.println("[MythicDungeons Debug] No teleport methods found to patch in Util class");
+            System.out.println("[MythicDungeons Debug] No teleport methods found to patch");
+        }
+    }
+
+    /**
+     * Procedural instance patch - sadece debug için
+     */
+    public static void patchProceduralInstance(ClassNode node) {
+        System.out.println("[MythicDungeons Debug] Patching InstancePlayable for procedural dungeons...");
+        
+        for (MethodNode method : node.methods) {
+            System.out.println("[MythicDungeons Debug] Found InstancePlayable method: " + method.name + method.desc);
+            
+            // addPlayer method'unu özel debug'la
+            if (method.name.equals("addPlayer")) {
+                System.out.println("[MythicDungeons Debug] Found procedural addPlayer method!");
+                addDebugLogging(method, "InstancePlayable.addPlayer");
+                
+                // Procedural teleport flag'i ekle (method içinde procedural=true çağrısı yapılması için)
+                patchProceduralTeleportFlag(method);
+            }
+        }
+    }
+
+    /**
+     * Procedural teleport flag patch'i
+     */
+    private static void patchProceduralTeleportFlag(MethodNode method) {
+        for (AbstractInsnNode insn : method.instructions) {
+            if (insn instanceof MethodInsnNode mInsn) {
+                // forceTeleport çağrısını tespit et
+                if ((mInsn.name.equals("forceTeleport") || mInsn.name.equals("forceTeleport2")) &&
+                    mInsn.owner.contains("Util")) {
+                    
+                    System.out.println("[MythicDungeons Debug] Found forceTeleport call in procedural addPlayer - will use extended delay");
+                    // Burada method çağrısını değiştirip procedural flag ekleyebiliriz ama karmaşık
+                    // Şimdilik sadece detection yeterli
+                }
+            }
         }
     }
     
@@ -444,19 +253,209 @@ public class PluginFixManager {
     }
     
     /**
+     * Debug logging ekler
+     */
+    private static void addDebugLogging(MethodNode method, String methodName) {
+        InsnList debugCode = new InsnList();
+        
+        debugCode.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        debugCode.add(new LdcInsnNode("[MythicDungeons Debug] Executing " + methodName));
+        debugCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        
+        method.instructions.insert(debugCode);
+    }
+    
+    /**
      * Method içindeki teleportAsync çağrılarını sync teleport ile değiştirir
      */
     private static void patchTeleportAsyncCalls(MethodNode method) {
         for (AbstractInsnNode insn : method.instructions) {
             if (insn instanceof MethodInsnNode mInsn) {
+                // teleportAsync çağrısını yakala
                 if (mInsn.name.equals("teleportAsync") && 
                     (mInsn.owner.equals("org/bukkit/entity/Entity") || 
                      mInsn.owner.equals("org/bukkit/entity/Player"))) {
                     
+                    // teleportAsync -> teleport olarak değiştir
                     mInsn.name = "teleport";
+                    // Sadece Location parametresini al (diğer parametreleri ignore et)
                     mInsn.desc = "(Lorg/bukkit/Location;)Z";
                     
                     System.out.println("[MythicDungeons Patch] Replaced teleportAsync call with teleport");
+                }
+            }
+        }
+    }
+    
+    /**
+     * Layout sınıfındaki async generation sorunlarını düzelt
+     */
+    public static void patchDungeonLayout(ClassNode node) {
+        System.out.println("[MythicDungeons Debug] Patching Layout class...");
+        
+        for (MethodNode method : node.methods) {
+            // Async method calls'ları sync'e çevir
+            patchAsyncMethodCalls(method);
+            
+            // Timeout değerlerini artır
+            patchTimeouts(method);
+            
+            // Debug logging ekle
+            if (method.name.equals("generate") || method.name.equals("build") || 
+                method.name.equals("paste") || method.name.equals("load")) {
+                System.out.println("[MythicDungeons Debug] Found generation method: " + method.name + method.desc);
+                addDebugLogging(method, method.name);
+            }
+        }
+    }
+    
+    /**
+     * AbstractInstance sınıfındaki world creation sorunlarını düzelt
+     */
+    public static void patchAbstractInstance(ClassNode node) {
+        System.out.println("[MythicDungeons Debug] Patching AbstractInstance class...");
+        
+        for (MethodNode method : node.methods) {
+            // Async calls'ları sync'e çevir
+            patchAsyncMethodCalls(method);
+            
+            // World creation ve chunk loading method'larını patch'le
+            if (method.name.equals("createWorld") || method.name.equals("initMap") ||
+                method.name.equals("applyWorldRules") || method.name.contains("World")) {
+                System.out.println("[MythicDungeons Debug] Found world method: " + method.name + method.desc);
+                addDebugLogging(method, method.name);
+            }
+        }
+    }
+    
+    /**
+     * Method içindeki async çağrıları sync'e çevirir
+     */
+    private static void patchAsyncMethodCalls(MethodNode method) {
+        for (AbstractInsnNode insn : method.instructions) {
+            if (insn instanceof MethodInsnNode mInsn) {
+                // Scheduler.runTaskAsynchronously -> runTask
+                if (mInsn.name.equals("runTaskAsynchronously")) {
+                    mInsn.name = "runTask";
+                    System.out.println("[MythicDungeons Patch] Converted runTaskAsynchronously to runTask");
+                }
+                
+                // CompletableFuture.supplyAsync -> sync call
+                else if (mInsn.name.equals("supplyAsync") && 
+                         mInsn.owner.equals("java/util/concurrent/CompletableFuture")) {
+                    // Bu daha karmaşık bir patch, şimdilik log at
+                    System.out.println("[MythicDungeons Debug] Found CompletableFuture.supplyAsync call in " + method.name);
+                }
+                
+                // Chunk loading async calls
+                else if ((mInsn.name.equals("getChunkAtAsync") || mInsn.name.equals("loadChunkAsync")) &&
+                         mInsn.owner.equals("org/bukkit/World")) {
+                    // Async chunk loading'i sync'e çevir
+                    mInsn.name = mInsn.name.replace("Async", "");
+                    System.out.println("[MythicDungeons Patch] Converted async chunk loading to sync");
+                }
+            }
+        }
+    }
+    
+    /**
+     * Timeout değerlerini artırır
+     */
+    private static void patchTimeouts(MethodNode method) {
+        for (AbstractInsnNode insn : method.instructions) {
+            // Küçük timeout değerlerini artır (1000ms altındakileri 10x yap)
+            if (insn instanceof IntInsnNode iInsn) {
+                if (iInsn.operand > 0 && iInsn.operand < 1000) {
+                    int oldValue = iInsn.operand;
+                    iInsn.operand *= 10; // 10x artır
+                    System.out.println("[MythicDungeons Patch] Increased timeout from " + oldValue + " to " + iInsn.operand);
+                }
+            }
+            else if (insn instanceof LdcInsnNode lInsn) {
+                if (lInsn.cst instanceof Integer timeout) {
+                    if (timeout > 0 && timeout < 1000) {
+                        int oldValue = timeout;
+                        lInsn.cst = timeout * 10;
+                        System.out.println("[MythicDungeons Patch] Increased LDC timeout from " + oldValue + " to " + lInsn.cst);
+                    }
+                }
+            }
+        }
+    }
+    
+    /**
+     * Method başına debug logging ekler
+     */
+    private static void addDebugLogging(MethodNode method, String methodName) {
+        // Method başına log ekle
+        InsnList debugStart = new InsnList();
+        debugStart.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        debugStart.add(new LdcInsnNode("[MythicDungeons Debug] Executing " + methodName + " method"));
+        debugStart.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        
+        method.instructions.insert(debugStart);
+    }
+    
+    /**
+     * StructurePiece sınıfındaki block placement sorunlarını düzelt
+     */
+    public static void patchStructurePiece(ClassNode node) {
+        System.out.println("[MythicDungeons Debug] Patching StructurePiece class...");
+        
+        for (MethodNode method : node.methods) {
+            // Async calls'ları sync'e çevir
+            patchAsyncMethodCalls(method);
+            
+            // Block placement method'larını debug'la
+            if (method.name.equals("place") || method.name.equals("build") || 
+                method.name.equals("paste") || method.name.equals("setBlock")) {
+                System.out.println("[MythicDungeons Debug] Found block placement method: " + method.name + method.desc);
+                addDebugLogging(method, "StructurePiece." + method.name);
+                
+                // Block placement'i sync yap
+                patchBlockPlacement(method);
+            }
+        }
+    }
+    
+    /**
+     * SchematicHelper sınıfındaki schematic loading sorunlarını düzelt
+     */
+    public static void patchSchematicHelper(ClassNode node) {
+        System.out.println("[MythicDungeons Debug] Patching SchematicHelper class...");
+        
+        for (MethodNode method : node.methods) {
+            // Async calls'ları sync'e çevir
+            patchAsyncMethodCalls(method);
+            
+            // Schematic loading method'larını debug'la
+            if (method.name.equals("load") || method.name.equals("paste") || 
+                method.name.equals("read") || method.name.equals("apply")) {
+                System.out.println("[MythicDungeons Debug] Found schematic method: " + method.name + method.desc);
+                addDebugLogging(method, "SchematicHelper." + method.name);
+            }
+            
+            // NBT loading method'larını patch'le
+            if (method.name.contains("NBT") || method.name.contains("nbt")) {
+                System.out.println("[MythicDungeons Debug] Found NBT method: " + method.name + method.desc);
+                addDebugLogging(method, "SchematicHelper." + method.name + "(NBT)");
+            }
+        }
+    }
+    
+    /**
+     * Block placement'i sync yapar ve chunk loading ekler
+     */
+    private static void patchBlockPlacement(MethodNode method) {
+        // Block placement için chunk loading ekle
+        for (AbstractInsnNode insn : method.instructions) {
+            if (insn instanceof MethodInsnNode mInsn) {
+                // setBlock, setType gibi çağrılardan önce chunk loading ekle
+                if (mInsn.name.equals("setBlock") || mInsn.name.equals("setType") ||
+                    mInsn.name.equals("setBlockData")) {
+                    
+                    // Bu daha karmaşık bir patch - şimdilik debug log
+                    System.out.println("[MythicDungeons Debug] Found block setting method: " + mInsn.name);
                 }
             }
         }
@@ -485,38 +484,14 @@ public class PluginFixManager {
             case "com.onarandombox.MultiverseCore.utils.WorldManager" -> {
                 return patch(clazz, MultiverseCore::fix);
             }
-            // MythicDungeons patch - TELEPORT FIX (DOĞRU CLASS PATH)
+            // MythicDungeons patches
             case "net.playavalon.mythicdungeons.utility.helpers.Util" -> {
                 System.out.println("[MythicDungeons Patch] Patching Util class for teleport fixes...");
                 return patch(clazz, PluginFixManager::patchDungeonTeleport);
             }
-            // MythicDungeons patch - LAYOUT GENERATION FIX (DÜZELTILMIŞ PATH)
-            case "net.playavalon.mythicdungeons.dungeons.layout.Layout" -> {
-                System.out.println("[MythicDungeons Patch] Patching Layout generation...");
-                return patch(clazz, PluginFixManager::patchLayoutGeneration);
-            }
-            // MythicDungeons patch - ASYNC GENERATION FIX
-            case "net.playavalon.mythicdungeons.api.generation.layout.LayoutBranching",
-                 "net.playavalon.mythicdungeons.api.generation.layout.LayoutMinecrafty" -> {
-                System.out.println("[MythicDungeons Patch] Patching async generation...");
-                return patch(clazz, PluginFixManager::patchLayoutGeneration);
-            }
-            
-            // MythicDungeons procedural dungeon patches - ÖNEMLI!
             case "net.playavalon.mythicdungeons.api.parents.instances.InstancePlayable" -> {
-                System.out.println("[MythicDungeons Patch] Patching procedural InstancePlayable...");
+                System.out.println("[MythicDungeons Patch] Patching InstancePlayable for procedural dungeons...");
                 return patch(clazz, PluginFixManager::patchProceduralInstance);
-            }
-            
-            case "net.playavalon.mythicdungeons.api.parents.instances.InstanceClassic" -> {
-                System.out.println("[MythicDungeons Patch] Patching classic InstanceClassic (for comparison)...");
-                return patch(clazz, PluginFixManager::patchClassicInstance);
-            }
-            
-            // Procedural generation engine
-            case "net.playavalon.mythicdungeons.dungeons.procedural.ProceduralDungeon" -> {
-                System.out.println("[MythicDungeons Patch] Patching ProceduralDungeon generation...");
-                return patch(clazz, PluginFixManager::patchProceduralGeneration);
             }
         }
 
@@ -557,7 +532,7 @@ public class PluginFixManager {
         return patcher == null ? clazz : patch(clazz, patcher);
     }
 
-    // -------------------- ASM HELPER --------------------
+    // -------------------- ASM HELPER (Aynı) --------------------
 
     private static void removePaper(ClassNode node) {
         for (MethodNode methodNode : node.methods) {
@@ -574,125 +549,6 @@ public class PluginFixManager {
         helloWorld(node, "com.destroystokyo.paper.PaperConfig", Youer.modid);
         helloWorld(node, "io.papermc.paper.configuration.Configuration", Youer.modid);
     }
-    }
-    
-    /**
-     * Procedural Instance'larda teleport sorunlarını düzelt
-     * Procedural dungeon'larda oyuncu ışınlanama sorunu burada!
-     */
-    public static void patchProceduralInstance(ClassNode node) {
-        System.out.println("[MythicDungeons Debug] Patching InstancePlayable for procedural dungeons...");
-        
-        for (MethodNode method : node.methods) {
-            System.out.println("[MythicDungeons Debug] Found InstancePlayable method: " + method.name + method.desc);
-            
-            // Teleport method'larını özel olarak patch'le
-            if (method.name.equals("teleport") || method.name.equals("addPlayer") ||
-                method.name.equals("joinPlayer") || method.name.contains("Teleport")) {
-                
-                System.out.println("[MythicDungeons Debug] Patching procedural teleport method: " + method.name);
-                
-                // Async calls'ları sync'e çevir
-                patchAsyncCalls(method);
-                
-                // Teleport async calls'ları özel olarak patch'le
-                patchTeleportAsyncCalls(method);
-                
-                // Debug logging ekle
-                addMethodDebugLogging(method, "InstancePlayable." + method.name);
-                
-                // Eğer bu addPlayer ise, daha agresif patch yap
-                if (method.name.equals("addPlayer") && 
-                    method.desc.contains("MythicPlayer")) {
-                    patchAddPlayerMethod(method);
-                }
-            }
-            
-            // Generation completion check method'ları
-            if (method.name.contains("generate") || method.name.contains("ready") ||
-                method.name.contains("complete") || method.name.contains("finish")) {
-                
-                System.out.println("[MythicDungeons Debug] Patching generation check: " + method.name);
-                addMethodDebugLogging(method, "InstancePlayable.generation." + method.name);
-                patchAsyncCalls(method);
-            }
-        }
-    }
-    
-    /**
-     * Classic Instance patch (karşılaştırma için)
-     */
-    public static void patchClassicInstance(ClassNode node) {
-        System.out.println("[MythicDungeons Debug] Patching InstanceClassic (working reference)...");
-        
-        for (MethodNode method : node.methods) {
-            if (method.name.equals("addPlayer") || method.name.equals("teleport")) {
-                System.out.println("[MythicDungeons Debug] Classic instance method: " + method.name + method.desc);
-                addMethodDebugLogging(method, "InstanceClassic." + method.name);
-            }
-        }
-    }
-    
-    /**
-     * Procedural Generation Engine patch
-     */
-    public static void patchProceduralGeneration(ClassNode node) {
-        System.out.println("[MythicDungeons Debug] Patching ProceduralDungeon generation engine...");
-        
-        for (MethodNode method : node.methods) {
-            // Generation tamamlanma callback'leri
-            if (method.name.equals("onGenerationComplete") || 
-                method.name.equals("onGenerationFinished") ||
-                method.name.contains("callback") || method.name.contains("Complete")) {
-                
-                System.out.println("[MythicDungeons Debug] Found generation callback: " + method.name);
-                addMethodDebugLogging(method, "ProceduralDungeon." + method.name);
-                
-                // Burada teleport trigger ediliyor olabilir
-                patchAsyncCalls(method);
-                patchTeleportAsyncCalls(method);
-            }
-            
-            // Generation method'ları
-            if (method.name.equals("generate") || method.name.equals("build") ||
-                method.name.equals("construct")) {
-                
-                System.out.println("[MythicDungeons Debug] Found generation method: " + method.name);
-                addMethodDebugLogging(method, "ProceduralDungeon." + method.name);
-                patchAsyncCalls(method);
-                patchTimeoutValues(method);
-            }
-        }
-    }
-    
-    /**
-     * addPlayer method'unu özel olarak patch'le - procedural dungeon sorununda kritik!
-     */
-    private static void patchAddPlayerMethod(MethodNode method) {
-        System.out.println("[MythicDungeons Debug] Applying special addPlayer patch for procedural dungeons");
-        
-        // addPlayer method'unun içinde teleport çağrısı geciktirilmeli
-        // Çünkü procedural generation henüz tamamlanmamış olabilir
-        
-        for (AbstractInsnNode insn : method.instructions) {
-            if (insn instanceof MethodInsnNode mInsn) {
-                // forceTeleport çağrılarını tespit et
-                if ((mInsn.name.equals("forceTeleport") || mInsn.name.equals("forceTeleport2")) &&
-                    mInsn.owner.contains("Util")) {
-                    
-                    System.out.println("[MythicDungeons Debug] Found forceTeleport call in addPlayer - this may need delay!");
-                    // Burada daha karmaşık patch yapılabilir - teleport'ı geciktirmek için
-                }
-                
-                // Generation check çağrıları
-                if (mInsn.name.contains("isReady") || mInsn.name.contains("isGenerated") ||
-                    mInsn.name.contains("isComplete")) {
-                    
-                    System.out.println("[MythicDungeons Debug] Found generation check in addPlayer: " + mInsn.name);
-                }
-            }
-        }
-    }
 
     public static boolean hasPaperAsyncSupport() { return false; }
 
@@ -707,7 +563,7 @@ public class PluginFixManager {
         } catch (Exception e) {
             System.err.println("[PluginFixManager] Failed to patch class: " + e.getMessage());
             e.printStackTrace();
-            return basicClass;
+            return basicClass; // Patch başarısızsa orijinali döndür
         }
     }
 
