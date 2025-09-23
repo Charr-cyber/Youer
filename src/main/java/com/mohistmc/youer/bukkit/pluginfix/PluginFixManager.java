@@ -20,8 +20,8 @@ import org.objectweb.asm.Opcodes;
 import static org.objectweb.asm.Opcodes.ARETURN;
 
 /**
- * Optimized PluginFixManager for MythicDungeons teleportation and generation issues
- * @version 2.0 - Complete rewrite with enhanced generation and teleportation system
+ * Complete PluginFixManager with all patches for MythicDungeons and other plugins
+ * @version 3.0 - Full version with all compatibility patches
  */
 public class PluginFixManager {
 
@@ -75,6 +75,20 @@ public class PluginFixManager {
             // Start generation process
             initiateGenerationAndTeleport(player, target, worldName, dungeonType);
         }
+    }
+    
+    /**
+     * Overloaded method for backward compatibility
+     */
+    public static void teleportEntityToDungeon(Entity entity, Location target, boolean isProcedural) {
+        if (entity == null || target == null) return;
+        
+        if (!(entity instanceof Player player)) {
+            return;
+        }
+
+        // Use the enhanced method
+        teleportEntityToDungeon(entity, target);
     }
     
     /**
@@ -632,6 +646,98 @@ public class PluginFixManager {
     }
     
     /**
+     * Patch Procedural Instance classes
+     */
+    public static void patchProceduralInstance(ClassNode node) {
+        System.out.println("[MythicDungeons] Patching InstancePlayable for procedural dungeons");
+        
+        for (MethodNode method : node.methods) {
+            System.out.println("[MythicDungeons Debug] Found InstancePlayable method: " + method.name + method.desc);
+            
+            // addPlayer method'unu özel olarak patch'le
+            if (method.name.equals("addPlayer")) {
+                System.out.println("[MythicDungeons Debug] Found procedural addPlayer method!");
+                addDebugLogging(method, "InstancePlayable.addPlayer");
+                patchProceduralTeleportDetection(method);
+            }
+        }
+    }
+    
+    /**
+     * Patch ChunkGenerator classes
+     */
+    public static void patchChunkGenerator(ClassNode node) {
+        System.out.println("[MythicDungeons] Patching DungeonChunkGenerator");
+        
+        for (MethodNode method : node.methods) {
+            System.out.println("[MythicDungeons Debug] Found ChunkGenerator method: " + method.name + method.desc);
+            
+            // Chunk generation method'ları
+            if (method.name.contains("generate") || method.name.contains("populate") ||
+                method.name.contains("chunk") || method.name.contains("world")) {
+                
+                System.out.println("[MythicDungeons Debug] Found CRITICAL chunk generation method: " + method.name);
+                addDebugLogging(method, "ChunkGenerator." + method.name + " [CHUNK_GEN]");
+            }
+        }
+    }
+    
+    /**
+     * Patch async generation methods
+     */
+    public static void patchAsyncGeneration(ClassNode node) {
+        System.out.println("[MythicDungeons] Patching async generation");
+        
+        for (MethodNode method : node.methods) {
+            for (AbstractInsnNode insn : method.instructions) {
+                if (insn instanceof MethodInsnNode mInsn) {
+                    // ExecutorService.submit() -> sync execution
+                    if (mInsn.owner.contains("ExecutorService") && mInsn.name.equals("submit")) {
+                        mInsn.owner = "java/util/concurrent/Callable";
+                        mInsn.name = "call";
+                        System.out.println("[MythicDungeons Patch] Converted async generation to sync");
+                    }
+                    
+                    // CompletableFuture.get() timeout'ları handle et
+                    if (mInsn.owner.equals("java/util/concurrent/CompletableFuture") && mInsn.name.equals("get")) {
+                        System.out.println("[MythicDungeons Patch] Found CompletableFuture.get() call");
+                    }
+                }
+            }
+        }
+    }
+    
+    /**
+     * Add debug logging to method
+     */
+    private static void addDebugLogging(MethodNode method, String methodName) {
+        InsnList debugCode = new InsnList();
+        
+        // System.out.println("[MythicDungeons Debug] Executing " + methodName);
+        debugCode.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        debugCode.add(new LdcInsnNode("[MythicDungeons Debug] Executing " + methodName));
+        debugCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        
+        method.instructions.insert(debugCode);
+    }
+    
+    /**
+     * Patch procedural teleport detection
+     */
+    private static void patchProceduralTeleportDetection(MethodNode method) {
+        for (AbstractInsnNode insn : method.instructions) {
+            if (insn instanceof MethodInsnNode mInsn) {
+                // forceTeleport çağrısını tespit et
+                if ((mInsn.name.equals("forceTeleport") || mInsn.name.equals("forceTeleport2")) &&
+                    mInsn.owner.contains("Util")) {
+                    
+                    System.out.println("[MythicDungeons Debug] Found forceTeleport call in procedural addPlayer - will use PROCEDURAL teleport with extended delay");
+                }
+            }
+        }
+    }
+    
+    /**
      * Increase timeout values in method
      */
     private static void increaseTimeouts(MethodNode method) {
@@ -659,32 +765,192 @@ public class PluginFixManager {
         }
     }
     
-    // ================== EXISTING PATCH METHODS (KEPT FOR COMPATIBILITY) ==================
+    // ================== MAIN PATCH INJECTOR ==================
     
     public static byte[] injectPluginFix(String plugin, String className, byte[] clazz) {
-        // MythicDungeons patches
+        // Debug: MythicDungeons class'larını log'la
         if (plugin.equals("MythicDungeons") || className.contains("mythicdungeons")) {
-            System.out.println("[MythicDungeons] Processing class: " + className);
-            
-            switch (className) {
-                case "net.playavalon.mythicdungeons.utility.helpers.Util" -> {
-                    return patch(clazz, PluginFixManager::patchDungeonTeleport);
-                }
-                case "net.playavalon.mythicdungeons.api.generation.layout.Layout" -> {
-                    return patch(clazz, PluginFixManager::patchLayoutGeneration);
-                }
-                // Add more patches as needed
-            }
+            System.out.println("[MythicDungeons Debug] Found MythicDungeons class: " + className);
         }
         
-        // Other plugin patches (kept from original)
-        return handleOtherPluginPatches(plugin, className, clazz);
+        // WorldEdit adapter setup
+        if (plugin.equals("WorldEdit")) {
+            String adapter = System.getProperty("worldedit.bukkit.adapter");
+            if (adapter == null) {
+                System.setProperty("worldedit.bukkit.adapter", "com.sk89q.worldedit.bukkit.adapter.impl.v1_21.PaperweightAdapter");
+            }
+        }
+
+        // Direct class name switches
+        switch (className) {
+            case "com.ghostchu.quickshop.platform.spigot.AbstractSpigotPlatform" -> {
+                return patch(clazz, PluginFixManager::qs);
+            }
+            case "com.fastasyncworldedit.bukkit.util.MinecraftVersion" -> {
+                return patch(clazz, PluginFixManager::fawe);
+            }
+            case "com.bgsoftware.superiorskyblock.external.ProvidersManagerImpl" -> {
+                return patch(clazz, PluginFixManager::removePaper);
+            }
+            // MythicDungeons patches
+            case "net.playavalon.mythicdungeons.utility.helpers.Util" -> {
+                System.out.println("[MythicDungeons Patch] Patching Util class for teleport fixes...");
+                return patch(clazz, PluginFixManager::patchDungeonTeleport);
+            }
+            case "net.playavalon.mythicdungeons.api.parents.instances.InstancePlayable" -> {
+                System.out.println("[MythicDungeons Patch] Patching InstancePlayable for procedural dungeons...");
+                return patch(clazz, PluginFixManager::patchProceduralInstance);
+            }
+            // Alternative procedural instance class names
+            case "net.playavalon.mythicdungeons.dungeons.instances.ProceduralInstance",
+                 "net.playavalon.mythicdungeons.api.instances.InstanceProcedural",
+                 "net.playavalon.mythicdungeons.instances.InstancePlayable" -> {
+                System.out.println("[MythicDungeons Patch] Patching alternative procedural instance: " + className);
+                return patch(clazz, PluginFixManager::patchProceduralInstance);
+            }
+            case "net.playavalon.mythicdungeons.api.generation.layout.Layout" -> {
+                System.out.println("[MythicDungeons Patch] Patching Layout generation class...");
+                return patch(clazz, PluginFixManager::patchLayoutGeneration);
+            }
+            case "net.playavalon.mythicdungeons.api.chunkgenerators.DungeonChunkGenerator" -> {
+                System.out.println("[MythicDungeons Patch] Patching DungeonChunkGenerator...");
+                return patch(clazz, PluginFixManager::patchChunkGenerator);
+            }
+            case "net.playavalon.mythicdungeons.api.generation.layout.LayoutBranching",
+                 "net.playavalon.mythicdungeons.api.generation.layout.LayoutMinecrafty" -> {
+                System.out.println("[MythicDungeons Patch] Patching async generation...");
+                return patch(clazz, PluginFixManager::patchAsyncGeneration);
+            }
+        }
+
+        // CMI patch'leri
+        if (className.startsWith("net.Zrips.CMILib.") || className.startsWith("com.Zrips.CMI.")) {
+            return patch(clazz, node -> helloWorld(node, "net.minecraft.server.network.PlayerConnection", "net.minecraft.server.network.ServerGamePacketListenerImpl"));
+        }
+
+        // Consumer based patches
+        Consumer<ClassNode> patcher = switch (className) {
+            case "com.earth2me.essentials.utils.VersionUtil" -> node -> {
+                helloWorld(node, "brand:", "peace");
+                ex(node);
+            };
+            case "net.Zrips.CMILib.Reflections" -> node -> helloWorld(node, "bR", "f_36096_");
+            case "net.Zrips.CMILib.RawMessages.RawMessageManager" ->
+                    node -> helloWorld(node, "net.minecraft.server.network.PlayerConnection", "net.minecraft.server.network.ServerGamePacketListenerImpl");
+            case "com.sk89q.worldedit.bukkit.BukkitConfiguration" -> node -> {
+                helloWorld(node, "I accept that I will receive no support with this flag enabled.", Youer.modid);
+                helloWorld(node, "allow-editing-on-unsupported-versions", Youer.modid);
+                helloWorld(node, "false", Youer.modid);
+            };
+            case "com.sk89q.worldedit.bukkit.adapter.impl.v1_21.PaperweightAdapter",
+                 "com.sk89q.worldedit.bukkit.adapter.ext.fawe.v1_21_R1.PaperweightAdapter" ->
+                    node -> helloWorld(node, "org.spigotmc.WatchdogThread", Youer.modid);
+            case "cn.lunadeer.dominion.utils.Misc" ->
+                    node -> helloWorld(node, "io.papermc.paper.threadedregions.scheduler.ScheduledTask", Youer.modid);
+            case "com.sk89q.worldedit.bukkit.paperlib.PaperLib" -> node -> {
+                removePaper0(node);
+                String adapter = System.getProperty("paperlib.shown-benefits");
+                if (adapter == null) System.setProperty("paperlib.shown-benefits", "1");
+            };
+            case "org.mvplugins.multiverse.external.paperlib.PaperLib",
+                 "me.SuperRonanCraft.BetterRTP.lib.paperlib.PaperLib",
+                 "com.plotsquared.bukkit.paperlib.PaperLib" -> PluginFixManager::removePaper0;
+            default -> null;
+        };
+
+        return patcher == null ? clazz : patch(clazz, patcher);
     }
     
-    private static byte[] handleOtherPluginPatches(String plugin, String className, byte[] clazz) {
-        // Original patch logic for other plugins
-        // ... (keep existing logic)
-        return clazz;
+    // -------------------- ASM HELPER METHODS --------------------
+    
+    private static void removePaper(ClassNode node) {
+        for (MethodNode methodNode : node.methods) {
+            if (methodNode.name.equals("hasPaperAsyncSupport") && methodNode.desc.equals("()Z")) {
+                InsnList toInject = new InsnList();
+                toInject.add(new MethodInsnNode(Opcodes.INVOKESTATIC, Type.getInternalName(PluginFixManager.class), "hasPaperAsyncSupport", "()Z", false));
+                toInject.add(new InsnNode(Opcodes.IRETURN));
+                methodNode.instructions = toInject;
+            }
+        }
+    }
+    
+    private static void removePaper0(ClassNode node) {
+        helloWorld(node, "com.destroystokyo.paper.PaperConfig", Youer.modid);
+        helloWorld(node, "io.papermc.paper.configuration.Configuration", Youer.modid);
+    }
+
+    private static void redirectMethodToGetNMSVersion(ClassNode node, String methodName) {
+        for (MethodNode methodNode : node.methods) {
+            if (methodNode.name.equals(methodName) && methodNode.desc.equals("()Ljava/lang/String;")) {
+                InsnList toInject = new InsnList();
+                toInject.add(new MethodInsnNode(
+                        Opcodes.INVOKESTATIC,
+                        Type.getInternalName(PluginFixManager.class),
+                        "getNMSVersion",
+                        "()Ljava/lang/String;",
+                        false
+                ));
+                toInject.add(new InsnNode(ARETURN));
+                methodNode.instructions = toInject;
+                methodNode.tryCatchBlocks.clear();
+            }
+        }
+    }
+
+    private static void qs(ClassNode node) { 
+        redirectMethodToGetNMSVersion(node, "getNMSVersion"); 
+    }
+    
+    private static void fawe(ClassNode node) { 
+        redirectMethodToGetNMSVersion(node, "getPackageVersion"); 
+    }
+
+    public static void ex(ClassNode node) {
+        for (MethodNode method : node.methods) {
+            if (method.name.equals("make") && method.desc.equals("(Ljava/lang/String;)Ljava/lang/String;")) {
+                InsnList toInject = new InsnList();
+                toInject.add(new VarInsnNode(Opcodes.ALOAD, 0));
+                toInject.add(new MethodInsnNode(
+                        Opcodes.INVOKESTATIC,
+                        Type.getInternalName(PluginFixManager.class),
+                        "make",
+                        "(Ljava/lang/String;)Ljava/lang/String;",
+                        false
+                ));
+                toInject.add(new InsnNode(ARETURN));
+                method.instructions = toInject;
+                method.tryCatchBlocks.clear();
+            }
+        }
+    }
+
+    private static void helloWorld(ClassNode node, String a, String b) {
+        node.methods.forEach(method -> {
+            for (AbstractInsnNode next : method.instructions) {
+                if (next instanceof LdcInsnNode ldcInsnNode) {
+                    if (ldcInsnNode.cst instanceof String str) {
+                        if (a.equals(str)) ldcInsnNode.cst = b;
+                    }
+                }
+            }
+        });
+    }
+
+    private static void helloWorld(ClassNode node, int a, int b) {
+        node.methods.forEach(method -> {
+            for (AbstractInsnNode next : method.instructions) {
+                if (next instanceof IntInsnNode ldcInsnNode) {
+                    if (ldcInsnNode.operand == a) ldcInsnNode.operand = b;
+                }
+            }
+        });
+    }
+    
+    public static String make(String in) {
+        if (in.equals("8(;4>`")) return "peace";
+        final char[] c = in.toCharArray();
+        for (int i = 0; i < c.length; ++i) c[i] ^= 'Z';
+        return new String(c);
     }
     
     private static byte[] patch(byte[] basicClass, Consumer<ClassNode> handler) {
@@ -696,7 +962,7 @@ public class PluginFixManager {
             node.accept(writer);
             return writer.toByteArray();
         } catch (Exception e) {
-            System.err.println("[MythicDungeons] Failed to patch class: " + e.getMessage());
+            System.err.println("[PluginFixManager] Failed to patch class: " + e.getMessage());
             e.printStackTrace();
             return basicClass;
         }
