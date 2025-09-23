@@ -17,7 +17,7 @@ import static org.objectweb.asm.Opcodes.ARETURN;
 
 public class PluginFixManager {
 
-    // -------------------- TELEPORT + STRUCTURE GENERATION + ENHANCED VERSION --------------------
+    // -------------------- TELEPORT + STRUCTURE GENERATION + ENHANCED VERSION -------------------
 
     /**
      * Procedural dungeon için generation-aware teleport
