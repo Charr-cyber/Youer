@@ -17,7 +17,7 @@ import static org.objectweb.asm.Opcodes.ARETURN;
 
 public class PluginFixManager {
 
-    // -------------------- TELEPORT + STRUCTURE GENERATION --------------------
+    // -------------------- TELEPORT + STRUCTURE GENERATION + LAST VERSION --------------------
 
     /**
      * Oyuncuyu dungeon içine güvenli şekilde teleport eder ve yapı oluşturmayı bekler.
