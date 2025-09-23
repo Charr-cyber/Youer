@@ -51,6 +51,10 @@ public class PluginFixManager {
             System.out.println("[MythicDungeons Debug] New target: " + target.getX() + "," + target.getY() + "," + target.getZ());
         }
 
+        // Final reference for lambda
+        final Location finalTarget = target;
+        final String finalDungeonType = dungeonType;
+        
         // Procedural için ÇOK uzun delay - generation tamamlansın
         long delay = isProcedural ? 60L : 5L; // 3 saniye vs 250ms
 
@@ -60,21 +64,21 @@ public class PluginFixManager {
                 () -> {
                     try {
                         // 1. Target chunk'ı force load et
-                        if (!target.getChunk().isLoaded()) {
-                            System.out.println("[MythicDungeons Debug] Loading chunk for " + dungeonType + " teleport...");
-                            target.getChunk().load();
+                        if (!finalTarget.getChunk().isLoaded()) {
+                            System.out.println("[MythicDungeons Debug] Loading chunk for " + finalDungeonType + " teleport...");
+                            finalTarget.getChunk().load();
                         }
                         
                         // 2. Çevredeki chunk'ları da önceden yükle (structure için)
                         if (isProcedural) {
                             // Procedural için ÇOK fazla chunk yükle - dungeon büyük olabilir
-                            preloadSurroundingChunksSync(target, 10); // 20x20 chunk alan
+                            preloadSurroundingChunksSync(finalTarget, 10); // 20x20 chunk alan
                             
                             // Ayrıca spawn noktasını da yükle
-                            org.bukkit.Location spawnLoc = new org.bukkit.Location(target.getWorld(), 0, 64, 0);
+                            org.bukkit.Location spawnLoc = new org.bukkit.Location(finalTarget.getWorld(), 0, 64, 0);
                             preloadSurroundingChunksSync(spawnLoc, 5);
                         } else {
-                            preloadSurroundingChunks(target, 2); // Classic için async
+                            preloadSurroundingChunks(finalTarget, 2); // Classic için async
                         }
                         
                         // 3. Yapı oluşturma için delay (procedural için daha uzun)
@@ -83,25 +87,25 @@ public class PluginFixManager {
                             () -> {
                                 try {
                                     // 4. Güvenli teleport
-                                    boolean success = player.teleport(target);
+                                    boolean success = player.teleport(finalTarget);
                                     
                                     if (success) {
-                                        System.out.println("[MythicDungeons Patch] " + dungeonType + " teleport SUCCESS for " + 
-                                            player.getName() + " to dungeon at " + target.getWorld().getName() + " " + 
-                                            target.getX() + "," + target.getY() + "," + target.getZ());
+                                        System.out.println("[MythicDungeons Patch] " + finalDungeonType + " teleport SUCCESS for " + 
+                                            player.getName() + " to dungeon at " + finalTarget.getWorld().getName() + " " + 
+                                            finalTarget.getX() + "," + finalTarget.getY() + "," + finalTarget.getZ());
                                     } else {
-                                        System.err.println("[MythicDungeons Patch] " + dungeonType + " teleport FAILED for " + player.getName());
+                                        System.err.println("[MythicDungeons Patch] " + finalDungeonType + " teleport FAILED for " + player.getName());
                                     }
                                 } catch (Exception e) {
-                                    System.err.println("[MythicDungeons Patch] " + dungeonType + " teleport error: " + e.getMessage());
+                                    System.err.println("[MythicDungeons Patch] " + finalDungeonType + " teleport error: " + e.getMessage());
                                     e.printStackTrace();
                                 }
                             }, 
-                            delay // Procedural için 1s, Classic için 250ms
+                            delay // Procedural için 3s, Classic için 250ms
                         );
                         
                     } catch (Exception e) {
-                        System.err.println("[MythicDungeons Patch] " + dungeonType + " setup failed: " + e.getMessage());
+                        System.err.println("[MythicDungeons Patch] " + finalDungeonType + " setup failed: " + e.getMessage());
                         e.printStackTrace();
                     }
                 }
