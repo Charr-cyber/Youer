@@ -30,6 +30,86 @@ public class PluginFixManager {
     }
     
     /**
+     * SAFE GROUND-BASED TELEPORT - Minecraft native API kullanarak güvenli yer bul
+     */
+    private static Location findSafeGroundLocation(Location original) {
+        org.bukkit.World world = original.getWorld();
+        int x = (int) original.getX();
+        int z = (int) original.getZ();
+        
+        System.out.println("[MythicDungeons Debug] Finding safe ground at " + x + "," + z + " in world " + world.getName());
+        
+        // 1. Minecraft'ın native highest block API'sini kullan
+        int highestY = world.getHighestBlockYAt(x, z);
+        System.out.println("[MythicDungeons Debug] Highest block Y at (" + x + "," + z + "): " + highestY);
+        
+        // 2. Eğer çok yüksekse (128+), muhtemelen dungeon henüz generate olmamış
+        if (highestY >= 128) {
+            System.out.println("[MythicDungeons Debug] High Y detected (" + highestY + "), dungeon not generated yet. Trying manual search...");
+            
+            // Manuel olarak 60-90 arası ara
+            for (int y = 90; y >= 60; y--) {
+                org.bukkit.block.Block block = world.getBlockAt(x, y, z);
+                org.bukkit.block.Block above1 = world.getBlockAt(x, y + 1, z);
+                org.bukkit.block.Block above2 = world.getBlockAt(x, y + 2, z);
+                
+                if (!block.getType().isAir() && above1.getType().isAir() && above2.getType().isAir()) {
+                    System.out.println("[MythicDungeons Debug] Found manual ground at Y=" + (y + 1) + " (block: " + block.getType() + ")");
+                    return new Location(world, x + 0.5, y + 1.5, z + 0.5);
+                }
+            }
+            
+            // Son çare: Y=70 civarına koy, fall damage'ten korunmak için
+            System.out.println("[MythicDungeons Debug] No solid ground found, using Y=70 with safety measures");
+            return new Location(world, x + 0.5, 70, z + 0.5);
+        }
+        
+        // 3. Normal durumda: highest block üzerine + 1
+        int safeY = Math.max(highestY + 1, 60);
+        System.out.println("[MythicDungeons Debug] Using safe Y=" + safeY + " based on highest block");
+        return new Location(world, x + 0.5, safeY, z + 0.5);
+    }
+    
+    /**
+     * Teleport sonrası oyuncunun yerde olduğundan emin ol
+     */
+    private static void ensurePlayerOnGround(Player player) {
+        Location loc = player.getLocation();
+        org.bukkit.World world = loc.getWorld();
+        int x = loc.getBlockX();
+        int z = loc.getBlockZ();
+        int currentY = loc.getBlockY();
+        
+        System.out.println("[MythicDungeons Debug] Checking if player " + player.getName() + " is on ground at " + 
+                          x + "," + currentY + "," + z);
+        
+        // Altındaki block'u kontrol et
+        org.bukkit.block.Block below = world.getBlockAt(x, currentY - 1, z);
+        
+        if (below.getType().isAir()) {
+            System.out.println("[MythicDungeons Debug] Player is floating! Block below: " + below.getType() + 
+                             " - Searching for ground...");
+            
+            // Aşağı doğru solid block ara
+            for (int y = currentY - 2; y >= 50; y--) {
+                org.bukkit.block.Block checkBlock = world.getBlockAt(x, y, z);
+                if (!checkBlock.getType().isAir() && !checkBlock.getType().name().contains("WATER") && 
+                    !checkBlock.getType().name().contains("LAVA")) {
+                    
+                    Location groundLoc = new Location(world, x + 0.5, y + 1.5, z + 0.5);
+                    player.teleport(groundLoc);
+                    System.out.println("[MythicDungeons Patch] GROUND CORRECTION: Moved player to Y=" + (y + 1.5));
+                    return;
+                }
+            }
+            
+            System.out.println("[MythicDungeons Debug] No solid ground found below - player might be in void or pre-generated area");
+        } else {
+            System.out.println("[MythicDungeons Debug] Player is safely on ground (block below: " + below.getType() + ")");
+        }
+    }
+    
+    /**
      * Procedural-aware teleport - procedural dungeon'lar için daha uzun bekleme
      */
     public static void teleportEntityToDungeon(Entity entity, Location target, boolean isProcedural) {
@@ -87,20 +167,31 @@ public class PluginFixManager {
                             Bukkit.getPluginManager().getPlugin("MythicDungeons"),
                             () -> {
                                 try {
-                                    // 4. Güvenli teleport
-                                    boolean success = player.teleport(finalTarget);
+                                    // 4. SAFE GROUND-BASED TELEPORT
+                                    Location safeTarget = findSafeGroundLocation(finalTarget);
+                                    boolean success = player.teleport(safeTarget);
                                     
                                     if (success) {
-                                        System.out.println("[MythicDungeons Patch] " + finalDungeonType + " teleport SUCCESS for " + 
-                                            player.getName() + " to dungeon at " + finalTarget.getWorld().getName() + " " + 
-                                            finalTarget.getX() + "," + finalTarget.getY() + "," + finalTarget.getZ());
+                                        System.out.println("[MythicDungeons Patch] " + finalDungeonType + " SAFE teleport SUCCESS for " + 
+                                            player.getName() + " to dungeon at " + safeTarget.getWorld().getName() + " " + 
+                                            safeTarget.getX() + "," + safeTarget.getY() + "," + safeTarget.getZ());
                                         
-                                        // PROCEDURAL için post-teleport düzeltme
+                                        // IMMEDIATE ground check after teleport
+                                        Bukkit.getScheduler().runTaskLater(
+                                            Bukkit.getPluginManager().getPlugin("MythicDungeons"),
+                                            () -> ensurePlayerOnGround(player),
+                                            3L // Hemen ground check yap
+                                        );
+                                        
+                                        // PROCEDURAL için ek düzeltme - daha uzun süre bekle
                                         if (isProcedural) {
                                             Bukkit.getScheduler().runTaskLater(
                                                 Bukkit.getPluginManager().getPlugin("MythicDungeons"),
-                                                () -> attemptLocationCorrection(player, finalTarget.getWorld()),
-                                                40L // 2 saniye sonra konum düzelt
+                                                () -> {
+                                                    ensurePlayerOnGround(player);
+                                                    attemptLocationCorrection(player, finalTarget.getWorld());
+                                                },
+                                                60L // 3 saniye sonra tekrar konum düzelt
                                             );
                                         }
                                     } else {
