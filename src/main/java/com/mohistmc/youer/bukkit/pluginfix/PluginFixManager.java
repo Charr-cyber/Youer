@@ -138,11 +138,17 @@ public class PluginFixManager {
         
         try {
             // MythicDungeons plugin'in structure placement sistem'ini trigger etmeye çalış
-            // Reflection kullanarak plugin'in internal API'sine eriş
             Class<?> pluginClass = mythicPlugin.getClass();
             System.out.println("[MythicDungeons Debug] MythicDungeons main class: " + pluginClass.getName());
             
-            // Basit yaklaşım: world'de structure generation''ı force trigger et
+            // ÖNCE: MythicDungeons'in real ChunkGenerator'ini bulmaya çalış
+            if (tryActivateRealDungeonChunkGenerator(world, mythicPlugin)) {
+                System.out.println("[MythicDungeons Debug] Successfully activated real DungeonChunkGenerator!");
+            } else {
+                System.out.println("[MythicDungeons Debug] Could not activate real ChunkGenerator, using fallback methods");
+            }
+            
+            // Sonra structure generation''ı force trigger et
             forceStructureGeneration(world);
             
         } catch (Exception e) {
@@ -150,6 +156,118 @@ public class PluginFixManager {
             e.printStackTrace();
             forceStructureGeneration(world);
         }
+    }
+    
+    /**
+     * MythicDungeons'in REAL ChunkGenerator'ini aktifleştirmeye çalış
+     */
+    private static boolean tryActivateRealDungeonChunkGenerator(org.bukkit.World world, org.bukkit.plugin.Plugin mythicPlugin) {
+        System.out.println("[MythicDungeons Debug] Trying to activate REAL DungeonChunkGenerator for world: " + world.getName());
+        
+        try {
+            // Reflection ile MythicDungeons'in ChunkGenerator class'ini bul
+            Class<?> dungeonChunkGenClass = Class.forName("net.playavalon.mythicdungeons.api.chunkgenerators.DungeonChunkGenerator");
+            System.out.println("[MythicDungeons Debug] Found DungeonChunkGenerator class: " + dungeonChunkGenClass.getName());
+            
+            // DungeonChunkGenerator instance'i oluştur
+            // Constructor parametrelerini tahmin et
+            java.lang.reflect.Constructor<?>[] constructors = dungeonChunkGenClass.getConstructors();
+            for (java.lang.reflect.Constructor<?> constructor : constructors) {
+                System.out.println("[MythicDungeons Debug] Available constructor: " + constructor.toString());
+            }
+            
+            // World'un generator'ını değiştirmeye çalış (reflection ile)
+            return tryReplaceWorldGenerator(world, dungeonChunkGenClass);
+            
+        } catch (ClassNotFoundException e) {
+            System.err.println("[MythicDungeons Debug] DungeonChunkGenerator class not found: " + e.getMessage());
+            return false;
+        } catch (Exception e) {
+            System.err.println("[MythicDungeons Debug] Failed to activate real ChunkGenerator: " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
+    }
+    
+    /**
+     * World'un ChunkGenerator'ini değiştirmeye çalış
+     */
+    private static boolean tryReplaceWorldGenerator(org.bukkit.World world, Class<?> dungeonChunkGenClass) {
+        System.out.println("[MythicDungeons Debug] Attempting to replace world generator with real DungeonChunkGenerator");
+        
+        try {
+            // Bukkit World class'inin generator field'ini bul
+            java.lang.reflect.Field generatorField = world.getClass().getDeclaredField("generator");
+            generatorField.setAccessible(true);
+            
+            // Şu anki generator'i al
+            Object currentGenerator = generatorField.get(world);
+            System.out.println("[MythicDungeons Debug] Current generator: " + currentGenerator.getClass().getName());
+            
+            // Eğer zaten DungeonChunkGenerator değilse, değiştir
+            if (!currentGenerator.getClass().getName().contains("DungeonChunkGenerator")) {
+                // Basit constructor ile yeni instance oluştur
+                Object newGenerator = createDungeonChunkGeneratorInstance(dungeonChunkGenClass);
+                if (newGenerator != null) {
+                    generatorField.set(world, newGenerator);
+                    System.out.println("[MythicDungeons Debug] Successfully replaced generator with DungeonChunkGenerator!");
+                    return true;
+                }
+            } else {
+                System.out.println("[MythicDungeons Debug] World already has DungeonChunkGenerator");
+                return true;
+            }
+            
+        } catch (Exception e) {
+            System.err.println("[MythicDungeons Debug] Failed to replace world generator: " + e.getMessage());
+            e.printStackTrace();
+        }
+        
+        return false;
+    }
+    
+    /**
+     * DungeonChunkGenerator instance oluştur
+     */
+    private static Object createDungeonChunkGeneratorInstance(Class<?> dungeonChunkGenClass) {
+        try {
+            // En basit constructor'i dene
+            java.lang.reflect.Constructor<?>[] constructors = dungeonChunkGenClass.getConstructors();
+            
+            for (java.lang.reflect.Constructor<?> constructor : constructors) {
+                Class<?>[] paramTypes = constructor.getParameterTypes();
+                System.out.println("[MythicDungeons Debug] Trying constructor with " + paramTypes.length + " parameters");
+                
+                // Parametresiz constructor varsa kullan
+                if (paramTypes.length == 0) {
+                    Object instance = constructor.newInstance();
+                    System.out.println("[MythicDungeons Debug] Created DungeonChunkGenerator with no-args constructor");
+                    return instance;
+                }
+                
+                // Material + Collection + Map constructor'i dene (log'dan gördük)
+                if (paramTypes.length == 3 && 
+                    paramTypes[0].equals(org.bukkit.Material.class) &&
+                    java.util.Collection.class.isAssignableFrom(paramTypes[1]) &&
+                    java.util.Map.class.isAssignableFrom(paramTypes[2])) {
+                    
+                    // Basit parametreler ile instance oluştur
+                    org.bukkit.Material material = org.bukkit.Material.STONE;
+                    java.util.Collection<Object> collection = new java.util.ArrayList<>();
+                    java.util.Map<Object, Object> map = new java.util.HashMap<>();
+                    
+                    Object instance = constructor.newInstance(material, collection, map);
+                    System.out.println("[MythicDungeons Debug] Created DungeonChunkGenerator with 3-param constructor");
+                    return instance;
+                }
+            }
+            
+        } catch (Exception e) {
+            System.err.println("[MythicDungeons Debug] Failed to create DungeonChunkGenerator instance: " + e.getMessage());
+            e.printStackTrace();
+        }
+        
+        return null;
     }
     
     /**
@@ -473,9 +591,17 @@ public class PluginFixManager {
     }
     
     /**
-     * Yüklü chunk'larda oda ara
+     * Yüklü chunk'larda oda ara - MythicDungeons API + Manual detection
      */
     private static Location searchLoadedChunksForRoom(org.bukkit.World world) {
+        // ÖNCE: MythicDungeons API ile room location'larını almaya çalış
+        Location apiRoom = tryGetRoomFromMythicDungeonsAPI(world);
+        if (apiRoom != null) {
+            return apiRoom;
+        }
+        
+        System.out.println("[MythicDungeons Debug] MythicDungeons API failed, using manual chunk scanning...");
+        
         for (org.bukkit.Chunk chunk : world.getLoadedChunks()) {
             int chunkX = chunk.getX();
             int chunkZ = chunk.getZ();
@@ -485,14 +611,14 @@ public class PluginFixManager {
             
             System.out.println("[MythicDungeons Debug] Checking loaded chunk: " + chunkX + "," + chunkZ);
             
-            // Chunk içinde solid block ara
-            for (int x = 0; x < 16; x += 2) { // Her 2 block'ta bir hızlı tarama
-                for (int z = 0; z < 16; z += 2) {
+            // Chunk içinde solid block ara - DAHA DETAYLI
+            for (int x = 0; x < 16; x += 1) { // Her block'u tara
+                for (int z = 0; z < 16; z += 1) {
                     int worldX = (chunkX << 4) + x;
                     int worldZ = (chunkZ << 4) + z;
                     
                     // Y seviyesi ara - dungeon genelde 60-90 arası
-                    for (int y = 60; y <= 90; y += 2) { // Her 2 Y seviyesinde bir
+                    for (int y = 60; y <= 90; y += 1) { // Her Y seviyesini tara
                         org.bukkit.block.Block block = world.getBlockAt(worldX, y, worldZ);
                         org.bukkit.block.Block above = world.getBlockAt(worldX, y + 1, worldZ);
                         org.bukkit.block.Block above2 = world.getBlockAt(worldX, y + 2, worldZ);
@@ -501,11 +627,15 @@ public class PluginFixManager {
                         if (!block.getType().isAir() && 
                             above.getType().isAir() && 
                             above2.getType().isAir() &&
-                            !block.getType().toString().contains("BEDROCK")) {
+                            !block.getType().toString().contains("BEDROCK") &&
+                            !block.getType().toString().contains("AIR")) {
                             
-                            org.bukkit.Location foundLoc = new org.bukkit.Location(world, worldX + 0.5, y + 1, worldZ + 0.5);
-                            System.out.println("[MythicDungeons Debug] Found dungeon room at: " + worldX + "," + (y+1) + "," + worldZ + " (block: " + block.getType() + ")");
-                            return foundLoc;
+                            // Dungeon-like material kontrolu
+                            if (isDungeonMaterial(block.getType())) {
+                                org.bukkit.Location foundLoc = new org.bukkit.Location(world, worldX + 0.5, y + 1, worldZ + 0.5);
+                                System.out.println("[MythicDungeons Debug] Found POTENTIAL dungeon room at: " + worldX + "," + (y+1) + "," + worldZ + " (block: " + block.getType() + ")");
+                                return foundLoc;
+                            }
                         }
                     }
                 }
@@ -513,6 +643,174 @@ public class PluginFixManager {
         }
         
         return null; // Hiçbir oda bulunamadı
+    }
+    
+    /**
+     * MythicDungeons API'sinden room location almaya çalış
+     */
+    private static Location tryGetRoomFromMythicDungeonsAPI(org.bukkit.World world) {
+        System.out.println("[MythicDungeons Debug] Trying to get room locations from MythicDungeons API...");
+        
+        try {
+            // MythicDungeons plugin'i al
+            org.bukkit.plugin.Plugin mythicPlugin = org.bukkit.Bukkit.getPluginManager().getPlugin("MythicDungeons");
+            if (mythicPlugin == null) {
+                System.out.println("[MythicDungeons Debug] MythicDungeons plugin not found");
+                return null;
+            }
+            
+            // Reflection ile dungeon instance'larını bulmaya çalış
+            // World name'den dungeon instance bulma
+            return findDungeonInstanceRooms(world, mythicPlugin);
+            
+        } catch (Exception e) {
+            System.err.println("[MythicDungeons Debug] Failed to get rooms from API: " + e.getMessage());
+            e.printStackTrace();
+            return null;
+        }
+    }
+    
+    /**
+     * Dungeon instance'dan room'ları bul
+     */
+    private static Location findDungeonInstanceRooms(org.bukkit.World world, org.bukkit.plugin.Plugin mythicPlugin) {
+        try {
+            System.out.println("[MythicDungeons Debug] Searching for dungeon instance rooms in world: " + world.getName());
+            
+            // MythicDungeons'in manager class'larını bul
+            Class<?> dungeonManagerClass = Class.forName("net.playavalon.mythicdungeons.managers.DungeonManager");
+            System.out.println("[MythicDungeons Debug] Found DungeonManager class");
+            
+            // Static getInstance method'unu çağır
+            java.lang.reflect.Method getInstanceMethod = dungeonManagerClass.getMethod("getInstance");
+            Object dungeonManager = getInstanceMethod.invoke(null);
+            System.out.println("[MythicDungeons Debug] Got DungeonManager instance");
+            
+            // World name'e göre dungeon bul
+            java.lang.reflect.Method getDungeonByWorldMethod = dungeonManagerClass.getMethod("getDungeonByWorld", String.class);
+            Object dungeonInstance = getDungeonByWorldMethod.invoke(dungeonManager, world.getName());
+            
+            if (dungeonInstance != null) {
+                System.out.println("[MythicDungeons Debug] Found dungeon instance: " + dungeonInstance.getClass().getName());
+                return extractRoomLocationFromInstance(dungeonInstance, world);
+            } else {
+                System.out.println("[MythicDungeons Debug] No dungeon instance found for world: " + world.getName());
+            }
+            
+        } catch (Exception e) {
+            System.err.println("[MythicDungeons Debug] Failed to find dungeon instance rooms: " + e.getMessage());
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Dungeon instance'dan room location'u çıkar
+     */
+    private static Location extractRoomLocationFromInstance(Object dungeonInstance, org.bukkit.World world) {
+        try {
+            // Layout özelliklerini al
+            java.lang.reflect.Method getLayoutMethod = dungeonInstance.getClass().getMethod("getLayout");
+            Object layout = getLayoutMethod.invoke(dungeonInstance);
+            
+            if (layout != null) {
+                System.out.println("[MythicDungeons Debug] Got layout from dungeon instance");
+                
+                // Layout'tan room'ları al
+                java.lang.reflect.Method getRoomsMethod = layout.getClass().getMethod("getRooms");
+                Object rooms = getRoomsMethod.invoke(layout);
+                
+                if (rooms instanceof java.util.Collection) {
+                    java.util.Collection<?> roomCollection = (java.util.Collection<?>) rooms;
+                    System.out.println("[MythicDungeons Debug] Found " + roomCollection.size() + " rooms in layout");
+                    
+                    // İlk room'un location'unu al
+                    for (Object room : roomCollection) {
+                        Location roomLoc = getRoomLocation(room, world);
+                        if (roomLoc != null) {
+                            System.out.println("[MythicDungeons Debug] Found room location from API: " + 
+                                              roomLoc.getX() + "," + roomLoc.getY() + "," + roomLoc.getZ());
+                            return roomLoc;
+                        }
+                    }
+                }
+            }
+            
+        } catch (Exception e) {
+            System.err.println("[MythicDungeons Debug] Failed to extract room location: " + e.getMessage());
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Room object'inden Location al
+     */
+    private static Location getRoomLocation(Object room, org.bukkit.World world) {
+        try {
+            // Room'un center/location method'larını dene
+            java.lang.reflect.Method[] methods = room.getClass().getMethods();
+            for (java.lang.reflect.Method method : methods) {
+                String methodName = method.getName().toLowerCase();
+                if (methodName.contains("center") || methodName.contains("location") || 
+                    methodName.contains("position") || methodName.contains("coord")) {
+                    
+                    Object result = method.invoke(room);
+                    if (result != null) {
+                        System.out.println("[MythicDungeons Debug] Room method " + method.getName() + " returned: " + result);
+                        
+                        // Eğer Vector3i ise Location'a çevir
+                        if (result.getClass().getName().contains("Vector3i")) {
+                            return convertVector3iToLocation(result, world);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("[MythicDungeons Debug] Failed to get room location: " + e.getMessage());
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Vector3i'i Location'a çevir
+     */
+    private static Location convertVector3iToLocation(Object vector3i, org.bukkit.World world) {
+        try {
+            java.lang.reflect.Method xMethod = vector3i.getClass().getMethod("x");
+            java.lang.reflect.Method yMethod = vector3i.getClass().getMethod("y");
+            java.lang.reflect.Method zMethod = vector3i.getClass().getMethod("z");
+            
+            int x = (Integer) xMethod.invoke(vector3i);
+            int y = (Integer) yMethod.invoke(vector3i);
+            int z = (Integer) zMethod.invoke(vector3i);
+            
+            System.out.println("[MythicDungeons Debug] Converted Vector3i to Location: " + x + "," + y + "," + z);
+            return new Location(world, x + 0.5, y + 1, z + 0.5);
+            
+        } catch (Exception e) {
+            System.err.println("[MythicDungeons Debug] Failed to convert Vector3i: " + e.getMessage());
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Material'in dungeon malzemesi olup olmadığını kontrol et
+     */
+    private static boolean isDungeonMaterial(org.bukkit.Material material) {
+        // Dungeon'larda sıklıkla kullanılan materyaller
+        return material == org.bukkit.Material.STONE ||
+               material == org.bukkit.Material.COBBLESTONE ||
+               material == org.bukkit.Material.STONE_BRICKS ||
+               material == org.bukkit.Material.MOSSY_STONE_BRICKS ||
+               material == org.bukkit.Material.CRACKED_STONE_BRICKS ||
+               material == org.bukkit.Material.BRICKS ||
+               material == org.bukkit.Material.SMOOTH_STONE ||
+               material == org.bukkit.Material.ANDESITE ||
+               material == org.bukkit.Material.GRANITE ||
+               material == org.bukkit.Material.DIORITE;
     }
     
     /**
@@ -549,30 +847,40 @@ public class PluginFixManager {
     }
     
     /**
-     * Emergency platform oluştur - kesinlikle güvenli bir yer sağla
+     * Emergency platform oluştur - kesinlikle güvenli bir yer sağla (GENİŞ PLATFORM)
      */
     private static Location createEmergencyPlatform(org.bukkit.World world, int x, int y, int z) {
-        System.out.println("[MythicDungeons Debug] Creating emergency platform at (" + x + "," + y + "," + z + ")");
+        System.out.println("[MythicDungeons Debug] Creating LARGE emergency platform at (" + x + "," + y + "," + z + ")");
         
         try {
-            // 5x5 platform oluştur
-            for (int dx = -2; dx <= 2; dx++) {
-                for (int dz = -2; dz <= 2; dz++) {
-                    // Floor block
+            // 15x15 GENİŞ platform oluştur (oyuncu hareket edebilsin)
+            for (int dx = -7; dx <= 7; dx++) {
+                for (int dz = -7; dz <= 7; dz++) {
+                    // Floor block - STONE (dayanıklı)
                     org.bukkit.block.Block floorBlock = world.getBlockAt(x + dx, y, z + dz);
                     floorBlock.setType(org.bukkit.Material.STONE);
                     
-                    // Üstündeki 2 block'u air yap
+                    // Altında da destek platform (oyuncu düşmesin)
+                    world.getBlockAt(x + dx, y - 1, z + dz).setType(org.bukkit.Material.STONE);
+                    world.getBlockAt(x + dx, y - 2, z + dz).setType(org.bukkit.Material.STONE);
+                    
+                    // Üstündeki 3 block'u air yap (yükseklik için)
                     world.getBlockAt(x + dx, y + 1, z + dz).setType(org.bukkit.Material.AIR);
                     world.getBlockAt(x + dx, y + 2, z + dz).setType(org.bukkit.Material.AIR);
+                    world.getBlockAt(x + dx, y + 3, z + dz).setType(org.bukkit.Material.AIR);
                 }
             }
             
-            // Merkez noktaya torch ekle (görsel referans için)
-            org.bukkit.block.Block torchBlock = world.getBlockAt(x, y + 1, z);
-            torchBlock.setType(org.bukkit.Material.TORCH);
+            // Köşelere torch'lar ekle (görsel referans için)
+            world.getBlockAt(x - 6, y + 1, z - 6).setType(org.bukkit.Material.TORCH);
+            world.getBlockAt(x + 6, y + 1, z - 6).setType(org.bukkit.Material.TORCH);
+            world.getBlockAt(x - 6, y + 1, z + 6).setType(org.bukkit.Material.TORCH);
+            world.getBlockAt(x + 6, y + 1, z + 6).setType(org.bukkit.Material.TORCH);
             
-            System.out.println("[MythicDungeons Debug] Emergency platform created successfully!");
+            // Merkez noktaya özel marker
+            world.getBlockAt(x, y + 1, z).setType(org.bukkit.Material.GLOWSTONE);
+            
+            System.out.println("[MythicDungeons Debug] LARGE emergency platform (15x15) created successfully!");
             return new org.bukkit.Location(world, x + 0.5, y + 1.5, z + 0.5);
             
         } catch (Exception e) {
