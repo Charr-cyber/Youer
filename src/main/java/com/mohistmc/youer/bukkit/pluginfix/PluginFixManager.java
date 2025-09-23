@@ -23,7 +23,10 @@ public class PluginFixManager {
      * Oyuncuyu dungeon içine güvenli şekilde teleport eder ve yapı oluşturmayı bekler.
      */
     public static void teleportEntityToDungeon(Entity entity, Location target) {
-        teleportEntityToDungeon(entity, target, false);
+        // DEBUG: Şimdilik tüm teleport'ları PROCEDURAL yap
+        boolean isProcedural = target.getWorld().getName().contains("deneme") || target.getWorld().getName().contains("dungeon");
+        System.out.println("[MythicDungeons Debug] Auto-detecting dungeon type for world: " + target.getWorld().getName() + " -> " + (isProcedural ? "PROCEDURAL" : "CLASSIC"));
+        teleportEntityToDungeon(entity, target, isProcedural);
     }
     
     /**
@@ -330,6 +333,11 @@ public class PluginFixManager {
     // -------------------- PLUGIN PATCH --------------------
 
     public static byte[] injectPluginFix(String plugin, String className, byte[] clazz) {
+        // DEBUG: MythicDungeons class'larını log'la
+        if (plugin.equals("MythicDungeons") || className.contains("mythicdungeons")) {
+            System.out.println("[MythicDungeons Debug] Found MythicDungeons class: " + className);
+        }
+        
         if (plugin.equals("WorldEdit")) {
             String adapter = System.getProperty("worldedit.bukkit.adapter");
             if (adapter == null) {
@@ -358,6 +366,13 @@ public class PluginFixManager {
             // MythicDungeons patch - PROCEDURAL INSTANCE FIX (ÖNEMLİ!)
             case "net.playavalon.mythicdungeons.api.parents.instances.InstancePlayable" -> {
                 System.out.println("[MythicDungeons Patch] Patching InstancePlayable for procedural dungeons...");
+                return patch(clazz, PluginFixManager::patchProceduralInstance);
+            }
+            // Alternative procedural instance class names
+            case "net.playavalon.mythicdungeons.dungeons.instances.ProceduralInstance",
+                 "net.playavalon.mythicdungeons.api.instances.InstanceProcedural",
+                 "net.playavalon.mythicdungeons.instances.InstancePlayable" -> {
+                System.out.println("[MythicDungeons Patch] Patching alternative procedural instance: " + className);
                 return patch(clazz, PluginFixManager::patchProceduralInstance);
             }
             // MythicDungeons patch - LAYOUT GENERATION FIX
