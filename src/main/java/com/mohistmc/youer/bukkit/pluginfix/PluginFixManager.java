@@ -20,7 +20,7 @@ public class PluginFixManager {
     // -------------------- TELEPORT + STRUCTURE GENERATION + ENHANCED VERSION -------------------
 
     /**
-     * Procedural dungeon için generation-aware teleport
+     * Procedural dungeon için generation-aware teleporte
      */
     public static void teleportEntityToProceduralDungeon(Entity entity, Location target, Object instanceObj) {
         if (entity == null || target == null) return;
