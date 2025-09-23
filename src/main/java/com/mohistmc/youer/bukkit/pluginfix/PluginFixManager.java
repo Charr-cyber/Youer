@@ -2,19 +2,14 @@ package com.mohistmc.youer.bukkit.pluginfix;
 
 import com.mohistmc.youer.Youer;
 import java.util.function.Consumer;
+import org.bukkit.Bukkit;
+import org.bukkit.Location;
+import org.bukkit.entity.Player;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
-import org.objectweb.asm.tree.AbstractInsnNode;
-import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.InsnList;
-import org.objectweb.asm.tree.InsnNode;
-import org.objectweb.asm.tree.IntInsnNode;
-import org.objectweb.asm.tree.LdcInsnNode;
-import org.objectweb.asm.tree.MethodInsnNode;
-import org.objectweb.asm.tree.MethodNode;
-import org.objectweb.asm.tree.VarInsnNode;
+import org.objectweb.asm.tree.*;
 
 import static org.objectweb.asm.Opcodes.ARETURN;
 
@@ -39,6 +34,10 @@ public class PluginFixManager {
             }
             case "com.onarandombox.MultiverseCore.utils.WorldManager" -> {
                 return patch(clazz, MultiverseCore::fix);
+            }
+            // MythicDungeons teleport patch
+            case "net.playavalon.mythicdungeons.utility.helpers.Util" -> {
+                return patch(clazz, PluginFixManager::patchDungeonTeleport);
             }
         }
         if (className.startsWith("net.Zrips.CMILib.") || className.startsWith("com.Zrips.CMI.")) {
@@ -69,11 +68,51 @@ public class PluginFixManager {
                     System.setProperty("paperlib.shown-benefits", "1");
                 }
             };
-            case "org.mvplugins.multiverse.external.paperlib.PaperLib", "me.SuperRonanCraft.BetterRTP.lib.paperlib.PaperLib", "com.plotsquared.bukkit.paperlib.PaperLib" -> PluginFixManager::removePaper0;
+            case "org.mvplugins.multiverse.external.paperlib.PaperLib",
+                 "me.SuperRonanCraft.BetterRTP.lib.paperlib.PaperLib",
+                 "com.plotsquared.bukkit.paperlib.PaperLib" -> PluginFixManager::removePaper0;
             default -> null;
         };
 
         return patcher == null ? clazz : patch(clazz, patcher);
+    }
+
+    // MythicDungeons için teleport patch
+    private static void patchDungeonTeleport(ClassNode node) {
+        for (MethodNode method : node.methods) {
+            if (method.name.contains("teleport")) {
+                for (AbstractInsnNode insn : method.instructions) {
+                    if (insn instanceof MethodInsnNode mInsn) {
+                        if (mInsn.owner.equals("org/bukkit/entity/Player") && mInsn.name.equals("teleport")) {
+                            mInsn.setOpcode(Opcodes.INVOKESTATIC);
+                            mInsn.owner = Type.getInternalName(PluginFixManager.class);
+                            mInsn.name = "teleportPlayerToDungeon";
+                            mInsn.desc = "(Lorg/bukkit/entity/Player;Lorg/bukkit/Location;)V";
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    //  Güvenli teleport
+    public static void teleportPlayerToDungeon(Player player, Location target) {
+        if (player == null || target == null) return;
+
+        // AsyncTeleport
+        if (Bukkit.getPluginManager().isPluginEnabled("AsyncTeleport")) {
+            try {
+                Class<?> asyncTeleportClass = Class.forName("me.someplugin.AsyncTeleport");
+                asyncTeleportClass.getMethod("teleport", Player.class, Location.class).invoke(null, player, target);
+                return;
+            } catch (Exception ignored) {}
+        }
+
+        // Normal Bukkit API - sync task
+        Bukkit.getScheduler().runTask(
+                Bukkit.getPluginManager().getPlugin("MythicDungeons"),
+                () -> player.teleport(target)
+        );
     }
 
     private static void removePaper(ClassNode node) {
@@ -174,7 +213,6 @@ public class PluginFixManager {
         }
         return new String(c);
     }
-
 
     private static void helloWorld(ClassNode node, String a, String b) {
         node.methods.forEach(method -> {
