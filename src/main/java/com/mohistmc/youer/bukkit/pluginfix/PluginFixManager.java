@@ -44,9 +44,10 @@ public class PluginFixManager {
                           " to " + target.getWorld().getName());
         System.out.println("[MythicDungeons Debug] Target coordinates: " + target.getX() + "," + target.getY() + "," + target.getZ());
         
-        // SPAWN KOORDINATI KONTROLU - Eğer spawn ise dungeon center'a git
-        if (target.getX() == 3.0 && target.getY() == 128.0 && target.getZ() == 3.0) {
-            System.out.println("[MythicDungeons Debug] SPAWN coordinates detected! Trying to find dungeon center...");
+        // SPAWN KOORDINATI KONTROLU - Eğer spawn çevresindeyse dungeon center'a git
+        boolean isSpawnArea = (Math.abs(target.getX()) <= 10 && target.getY() >= 120 && Math.abs(target.getZ()) <= 10);
+        if (isSpawnArea) {
+            System.out.println("[MythicDungeons Debug] SPAWN area coordinates detected! (" + target.getX() + "," + target.getY() + "," + target.getZ() + ") Trying to find dungeon center...");
             target = findDungeonCenter(target.getWorld());
             System.out.println("[MythicDungeons Debug] New target: " + target.getX() + "," + target.getY() + "," + target.getZ());
         }
@@ -165,39 +166,76 @@ public class PluginFixManager {
     private static Location findDungeonCenter(org.bukkit.World world) {
         System.out.println("[MythicDungeons Debug] Searching for dungeon center in world: " + world.getName());
         
-        // Dungeon genelde uzak koordinatlarda oluşur, spawn'dan uzak
-        // Yaygın dungeon koordinatları: 1000+, -1000+ vs
-        
-        int[] searchRanges = {100, 500, 1000, 2000};
-        
-        for (int range : searchRanges) {
-            for (int x = -range; x <= range; x += 100) {
-                for (int z = -range; z <= range; z += 100) {
-                    if (x == 0 && z == 0) continue; // Skip spawn
+        // Önce yüklü chunk'larda arama yap - dungeon chunk'ları zaten yüklenmiş olmalı
+        for (org.bukkit.Chunk chunk : world.getLoadedChunks()) {
+            int chunkX = chunk.getX();
+            int chunkZ = chunk.getZ();
+            
+            // Spawn chunk'ı atla
+            if (chunkX == 0 && chunkZ == 0) continue;
+            
+            System.out.println("[MythicDungeons Debug] Checking loaded chunk: " + chunkX + "," + chunkZ);
+            
+            // Chunk içinde solid block ara
+            for (int x = 0; x < 16; x++) {
+                for (int z = 0; z < 16; z++) {
+                    int worldX = (chunkX << 4) + x;
+                    int worldZ = (chunkZ << 4) + z;
                     
-                    // Y seviyesi genelde 60-80 arasında
-                    for (int y = 60; y <= 80; y += 5) {
-                        org.bukkit.Location testLoc = new org.bukkit.Location(world, x, y, z);
+                    // Y seviyesi ara - dungeon genelde 60-80 arası
+                    for (int y = 60; y <= 90; y++) {
+                        org.bukkit.block.Block block = world.getBlockAt(worldX, y, worldZ);
+                        org.bukkit.block.Block above = world.getBlockAt(worldX, y + 1, worldZ);
+                        org.bukkit.block.Block above2 = world.getBlockAt(worldX, y + 2, worldZ);
                         
-                        // Chunk yüklü mü kontrol et
-                        if (world.isChunkLoaded(x >> 4, z >> 4)) {
-                            org.bukkit.block.Block block = testLoc.getBlock();
-                            org.bukkit.block.Block below = testLoc.clone().subtract(0, 1, 0).getBlock();
+                        // Dungeon oda kriteri: solid floor, 2 block boşluk üstünde
+                        if (!block.getType().isAir() && 
+                            above.getType().isAir() && 
+                            above2.getType().isAir() &&
+                            !block.getType().toString().contains("BEDROCK")) {
                             
-                            // Dungeon oda kriteri: ayakların altında katı block, üstünde hava
-                            if (!below.getType().isAir() && block.getType().isAir()) {
-                                System.out.println("[MythicDungeons Debug] Found potential dungeon room at: " + x + "," + y + "," + z);
-                                return testLoc.add(0.5, 0, 0.5); // Center of block
-                            }
+                            org.bukkit.Location foundLoc = new org.bukkit.Location(world, worldX + 0.5, y + 1, worldZ + 0.5);
+                            System.out.println("[MythicDungeons Debug] Found dungeon room at: " + worldX + "," + (y+1) + "," + worldZ + " (block: " + block.getType() + ")");
+                            return foundLoc;
                         }
                     }
                 }
             }
         }
         
-        // Eğer bulamazsa, uzak bir koordinat dene (dungeon genelde uzakta)
-        System.out.println("[MythicDungeons Debug] Could not find dungeon center, using estimated location");
-        return new org.bukkit.Location(world, 1000, 70, 1000);
+        // Eğer yüklü chunk'larda bulamazsa, sistematik arama
+        System.out.println("[MythicDungeons Debug] No room found in loaded chunks, trying systematic search...");
+        
+        int[] searchRanges = {50, 200, 500, 1000};
+        
+        for (int range : searchRanges) {
+            for (int x = -range; x <= range; x += 50) {
+                for (int z = -range; z <= range; z += 50) {
+                    if (Math.abs(x) <= 20 && Math.abs(z) <= 20) continue; // Skip spawn area
+                    
+                    // Bu chunk'ı yükle
+                    world.loadChunk(x >> 4, z >> 4);
+                    
+                    // Y seviyesinde ara
+                    for (int y = 65; y <= 75; y++) {
+                        org.bukkit.block.Block block = world.getBlockAt(x, y, z);
+                        org.bukkit.block.Block above = world.getBlockAt(x, y + 1, z);
+                        
+                        if (!block.getType().isAir() && above.getType().isAir()) {
+                            org.bukkit.Location foundLoc = new org.bukkit.Location(world, x + 0.5, y + 1, z + 0.5);
+                            System.out.println("[MythicDungeons Debug] Found dungeon room via systematic search at: " + x + "," + (y+1) + "," + z);
+                            return foundLoc;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Son çare: spawn noktasından uzak, güvenli bir yer
+        System.out.println("[MythicDungeons Debug] Could not find dungeon center, using safe fallback location");
+        org.bukkit.Location fallback = new org.bukkit.Location(world, 100, 70, 100);
+        world.loadChunk(fallback.getChunk());
+        return fallback;
     }
 
     /**
