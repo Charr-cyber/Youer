@@ -21,6 +21,26 @@
   </p>
 </div>
 
+⚠️ Fork & Legal Disclaimer
+
+This project is a fork of [MohistMC/Youer](https://github.com/MohistMC/Youer)
+
+All original rights and ownership remain with MohistMC.
+
+Nothing in this fork changes the original code ownership.
+
+This fork is created solely to add MythicDungeons 2.0+ compatibility and minor plugin integration fixes.
+
+All other functionalities remain identical to the original MohistMC/Youer project.
+
+🛠️ Changes in This Fork
+
+Teleport Fixes: Correctly handles player and entity teleportation across dungeon worlds for MythicDungeons 2.0+
+
+Plugin Compatibility Patches: ASM-based PluginFixManager for WorldEdit, MultiverseCore, CMI, and other common Bukkit/Paper plugins interacting with dungeons
+
+Core Adjustments: Minimal core-level patches ensuring server stability with modded plugins; NeoForge and Bukkit APIs remain unmodified
+
 ## 🚀 Features
 
 - Hybrid server combining NeoForge mod support with Paper API compatibility
