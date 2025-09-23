@@ -305,6 +305,33 @@ public class PluginFixManager {
                 
                 // Timeout'ları artır
                 patchTimeouts(method);
+                
+                // Özel timeout düzeltmeleri generate method'u için
+                if (method.name.equals("generate")) {
+                    patchGenerateTimeouts(method);
+                }
+            }
+        }
+    }
+    
+    /**
+     * Generate method'unda özel timeout düzeltmeleri
+     */
+    private static void patchGenerateTimeouts(MethodNode method) {
+        for (AbstractInsnNode insn : method.instructions) {
+            if (insn instanceof LdcInsnNode ldcInsn) {
+                if (ldcInsn.cst instanceof Long timeout && timeout == 5000L) {
+                    // 5 saniye → 30 saniye
+                    ldcInsn.cst = 30000L;
+                    System.out.println("[MythicDungeons Patch] Increased generation timeout to 30s");
+                }
+            }
+            if (insn instanceof IntInsnNode intInsn) {
+                if (intInsn.operand == 5) {
+                    // 5 saniye → 30 saniye
+                    intInsn.operand = 30;
+                    System.out.println("[MythicDungeons Patch] Increased generation timeout to 30s");
+                }
             }
         }
     }
@@ -328,32 +355,6 @@ public class PluginFixManager {
         }
     }
 
-    /**
-     * Layout generation timeout'larını düzelt
-     */
-    public static void patchLayoutGeneration(ClassNode node) {
-        for (MethodNode method : node.methods) {
-            if (method.name.equals("generate")) {
-                // Timeout değerlerini artır
-                for (AbstractInsnNode insn : method.instructions) {
-                    if (insn instanceof LdcInsnNode ldcInsn) {
-                        if (ldcInsn.cst instanceof Long timeout && timeout == 5000L) {
-                            // 5 saniye → 30 saniye
-                            ldcInsn.cst = 30000L;
-                            System.out.println("[MythicDungeons Patch] Increased generation timeout to 30s");
-                        }
-                    }
-                    if (insn instanceof IntInsnNode intInsn) {
-                        if (intInsn.operand == 5) {
-                            // 5 saniye → 30 saniye
-                            intInsn.operand = 30;
-                            System.out.println("[MythicDungeons Patch] Increased generation timeout to 30s");
-                        }
-                    }
-                }
-            }
-        }
-    }
     
     /**
      * CompletableFuture ve ExecutorService async call'larını sync'e çevir
@@ -638,11 +639,6 @@ public class PluginFixManager {
             case "net.playavalon.mythicdungeons.api.chunkgenerators.DungeonChunkGenerator" -> {
                 System.out.println("[MythicDungeons Patch] Patching DungeonChunkGenerator...");
                 return patch(clazz, PluginFixManager::patchChunkGenerator);
-            }
-            // MythicDungeons patch - LAYOUT GENERATION FIX
-            case "net.playavalon.mythicdungeons.api.generation.layout.Layout" -> {
-                System.out.println("[MythicDungeons Patch] Patching Layout generation...");
-                return patch(clazz, PluginFixManager::patchLayoutGeneration);
             }
             // MythicDungeons patch - ASYNC GENERATION FIX
             case "net.playavalon.mythicdungeons.api.generation.layout.LayoutBranching",
