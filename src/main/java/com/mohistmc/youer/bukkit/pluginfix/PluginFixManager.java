@@ -49,39 +49,60 @@ public class PluginFixManager {
     // ================== MAIN TELEPORT HANDLER ==================
     
     /**
-     * Enhanced teleportEntityToDungeon with pre-generation and smart detection
+     * Enhanced teleportEntityToDungeon - THIS IS THE REPLACEMENT FOR forceTeleport!
+     * Called from MythicDungeons when it wants to teleport a player
      */
     public static void teleportEntityToDungeon(Entity entity, Location target) {
         if (entity == null || target == null || !(entity instanceof Player player)) {
             return;
         }
         
-        // LOG THE ORIGINAL TARGET COORDINATES!
-        System.out.println("[MythicDungeons] ORIGINAL TARGET from forceTeleport: " + 
+        // CRITICAL: Log the coordinates MythicDungeons calculated!
+        System.out.println("[MythicDungeons] forceTeleport intercepted! Target coordinates: " + 
             "World=" + target.getWorld().getName() + 
             " X=" + target.getX() + 
             " Y=" + target.getY() + 
             " Z=" + target.getZ());
         
+        // IMPORTANT: MythicDungeons has already:
+        // 1. Created the dungeon instance
+        // 2. Added player to instance
+        // 3. Calculated the spawn location
+        // 4. Called forceTeleport with the CORRECT coordinates!
+        // 
+        // So we should JUST TELEPORT to the given location!
+        
+        // Wait a bit for chunks to load, then teleport
         World world = target.getWorld();
-        String worldName = world.getName();
-        DungeonType dungeonType = detectDungeonType(worldName);
         
-        System.out.println("[MythicDungeons] Detected dungeon type: " + dungeonType + " for world: " + worldName);
+        // Preload chunks around target
+        int chunkX = target.getBlockX() >> 4;
+        int chunkZ = target.getBlockZ() >> 4;
         
-        // Check current generation state
-        DungeonGenerationState currentState = dungeonStates.getOrDefault(worldName, DungeonGenerationState.NOT_STARTED);
-        
-        if (currentState == DungeonGenerationState.READY) {
-            // Dungeon is ready, teleport immediately
-            performSafeTeleport(player, target, dungeonType);
-        } else if (currentState == DungeonGenerationState.GENERATING || currentState == DungeonGenerationState.PRELOADING) {
-            // Generation in progress, wait for completion
-            waitForGenerationAndTeleport(player, target, worldName, dungeonType);
-        } else {
-            // Start generation process
-            initiateGenerationAndTeleport(player, target, worldName, dungeonType);
+        for (int x = -2; x <= 2; x++) {
+            for (int z = -2; z <= 2; z++) {
+                if (!world.isChunkLoaded(chunkX + x, chunkZ + z)) {
+                    world.loadChunk(chunkX + x, chunkZ + z);
+                }
+            }
         }
+        
+        System.out.println("[MythicDungeons] Chunks loaded, teleporting player...");
+        
+        // Small delay to let chunks fully load
+        Bukkit.getScheduler().runTaskLater(getPlugin(), () -> {
+            // Just teleport to the exact location MythicDungeons gave us!
+            boolean success = player.teleport(target);
+            
+            if (success) {
+                System.out.println("[MythicDungeons] Successfully teleported " + player.getName() + 
+                    " to dungeon at X=" + target.getBlockX() + " Y=" + target.getBlockY() + " Z=" + target.getBlockZ());
+            } else {
+                System.err.println("[MythicDungeons] Failed to teleport " + player.getName());
+                // Fallback: try with safety check
+                performSafeTeleportSimple(player, target);
+            }
+        }, 10L); // 0.5 second delay
     }
     
     /**
@@ -94,8 +115,34 @@ public class PluginFixManager {
             return;
         }
 
-        // Use the enhanced method
+        // Use the main method
         teleportEntityToDungeon(entity, target);
+    }
+    
+    /**
+     * Simple safe teleport without all the generation logic
+     */
+    private static void performSafeTeleportSimple(Player player, Location target) {
+        // Check if target is safe
+        org.bukkit.block.Block targetBlock = target.getBlock();
+        org.bukkit.block.Block below = target.getWorld().getBlockAt(target.getBlockX(), target.getBlockY() - 1, target.getBlockZ());
+        
+        if (below.getType().isAir()) {
+            // Find safe ground nearby
+            for (int y = target.getBlockY() - 1; y >= target.getBlockY() - 10; y--) {
+                org.bukkit.block.Block checkBlock = target.getWorld().getBlockAt(target.getBlockX(), y, target.getBlockZ());
+                if (!checkBlock.getType().isAir()) {
+                    Location safeLocation = new Location(target.getWorld(), target.getX(), y + 1, target.getZ(), target.getYaw(), target.getPitch());
+                    player.teleport(safeLocation);
+                    System.out.println("[MythicDungeons] Teleported to safe location at Y=" + (y + 1));
+                    return;
+                }
+            }
+        }
+        
+        // Just teleport anyway
+        player.teleport(target);
+        System.out.println("[MythicDungeons] Teleported to original target");
     }
     
     /**
@@ -970,11 +1017,12 @@ public class PluginFixManager {
         for (MethodNode method : node.methods) {
             System.out.println("[MythicDungeons Debug] Found InstancePlayable method: " + method.name + method.desc);
             
-            // addPlayer method'unu özel olarak patch'le
+            // addPlayer method - ONLY add debug, don't modify the logic!
             if (method.name.equals("addPlayer")) {
                 System.out.println("[MythicDungeons Debug] Found procedural addPlayer method!");
                 addDebugLogging(method, "InstancePlayable.addPlayer");
-                patchProceduralTeleportDetection(method);
+                // DO NOT modify the teleport detection - let MythicDungeons handle instance creation!
+                // patchProceduralTeleportDetection(method); // REMOVED - Don't interfere!
             }
         }
     }
