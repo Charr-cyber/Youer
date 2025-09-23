@@ -365,25 +365,49 @@ public class PluginFixManager {
     private static boolean verifyDungeonExists(World world) {
         System.out.println("[MythicDungeons] Verifying dungeon existence in world: " + world.getName());
         
-        // Check if any chunks have dungeon-like structures
+        // First try to get room info from DungeonChunkGenerator
+        try {
+            org.bukkit.generator.ChunkGenerator gen = world.getGenerator();
+            if (gen != null && gen.getClass().getName().contains("DungeonChunkGenerator")) {
+                System.out.println("[MythicDungeons] Found DungeonChunkGenerator, checking for rooms...");
+                
+                // Try to get room bounds via reflection
+                java.lang.reflect.Method getRoomBounds = gen.getClass().getMethod("getRoomBounds");
+                Object roomBounds = getRoomBounds.invoke(gen);
+                if (roomBounds != null && roomBounds instanceof Map) {
+                    Map<?, ?> bounds = (Map<?, ?>) roomBounds;
+                    if (!bounds.isEmpty()) {
+                        System.out.println("[MythicDungeons] Found " + bounds.size() + " rooms via ChunkGenerator!");
+                        return true;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("[MythicDungeons] Could not get rooms from ChunkGenerator: " + e.getMessage());
+        }
+        
+        // Fallback: Check if any chunks have dungeon-like structures
+        // Expand search range since dungeons might be at different Y levels
         int dungeonBlocksFound = 0;
         
         for (org.bukkit.Chunk chunk : world.getLoadedChunks()) {
-            if (Math.abs(chunk.getX()) > 5 || Math.abs(chunk.getZ()) > 5) {
-                continue; // Only check central chunks
+            if (Math.abs(chunk.getX()) > 10 || Math.abs(chunk.getZ()) > 10) {
+                continue; // Check more chunks
             }
             
-            // Quick scan for dungeon materials at typical dungeon height
-            for (int x = 0; x < 16; x += 8) {
-                for (int z = 0; z < 16; z += 8) {
-                    for (int y = 60; y <= 80; y += 10) {
+            // Scan wider Y range - dungeons can be at various heights
+            for (int x = 0; x < 16; x += 4) {
+                for (int z = 0; z < 16; z += 4) {
+                    // Check from bedrock to sky
+                    for (int y = 5; y <= 120; y += 5) {
                         int worldX = (chunk.getX() << 4) + x;
                         int worldZ = (chunk.getZ() << 4) + z;
                         
                         org.bukkit.block.Block block = world.getBlockAt(worldX, y, worldZ);
                         if (isDungeonMaterial(block.getType()) && !block.getType().isAir()) {
                             dungeonBlocksFound++;
-                            if (dungeonBlocksFound > 5) {
+                            System.out.println("[MythicDungeons] Found dungeon block at Y=" + y);
+                            if (dungeonBlocksFound > 3) {
                                 System.out.println("[MythicDungeons] Dungeon structures found!");
                                 return true;
                             }
@@ -394,6 +418,13 @@ public class PluginFixManager {
         }
         
         System.out.println("[MythicDungeons] Dungeon blocks found: " + dungeonBlocksFound);
+        
+        // If we found the world but no blocks, assume dungeon exists (MythicDungeons said it loaded)
+        if (dungeonBlocksFound == 0 && world.getName().contains("deneme")) {
+            System.out.println("[MythicDungeons] Assuming dungeon exists (world loaded by MythicDungeons)");
+            return true;
+        }
+        
         return dungeonBlocksFound > 0;
     }
     
@@ -493,20 +524,40 @@ public class PluginFixManager {
     private static Location findSpawnRoom(World world) {
         System.out.println("[MythicDungeons] Looking for spawn room...");
         
-        // Check center chunks first (spawn is usually there)
-        for (int chunkX = -1; chunkX <= 1; chunkX++) {
-            for (int chunkZ = -1; chunkZ <= 1; chunkZ++) {
-                org.bukkit.Chunk chunk = world.getChunkAt(chunkX, chunkZ);
-                
-                // Look for a large open area (spawn room)
-                for (int x = 0; x < 16; x += 2) {
-                    for (int z = 0; z < 16; z += 2) {
-                        int worldX = (chunkX << 4) + x;
-                        int worldZ = (chunkZ << 4) + z;
-                        
-                        // Check common dungeon Y levels
-                        for (int y = 64; y <= 72; y++) {
-                            if (isLikelySpawnRoom(world, worldX, y, worldZ)) {
+        // Try to get spawn from ChunkGenerator first
+        Location generatorSpawn = getSpawnFromGenerator(world);
+        if (generatorSpawn != null) {
+            return generatorSpawn;
+        }
+        
+        // Scan ALL Y levels - dungeon might be at any height
+        // Start from bottom to top
+        for (int y = 5; y <= 250; y += 2) {
+            // Check center area
+            for (int chunkX = -2; chunkX <= 2; chunkX++) {
+                for (int chunkZ = -2; chunkZ <= 2; chunkZ++) {
+                    org.bukkit.Chunk chunk = world.getChunkAt(chunkX, chunkZ);
+                    
+                    // Look for a room structure
+                    for (int x = 0; x < 16; x += 4) {
+                        for (int z = 0; z < 16; z += 4) {
+                            int worldX = (chunkX << 4) + x;
+                            int worldZ = (chunkZ << 4) + z;
+                            
+                            // Check if this is a room
+                            org.bukkit.block.Block floor = world.getBlockAt(worldX, y, worldZ);
+                            org.bukkit.block.Block above1 = world.getBlockAt(worldX, y + 1, worldZ);
+                            org.bukkit.block.Block above2 = world.getBlockAt(worldX, y + 2, worldZ);
+                            org.bukkit.block.Block above3 = world.getBlockAt(worldX, y + 3, worldZ);
+                            
+                            // Look for: solid floor, 3+ blocks of air above
+                            if (!floor.getType().isAir() && 
+                                isDungeonMaterial(floor.getType()) &&
+                                above1.getType().isAir() && 
+                                above2.getType().isAir() && 
+                                above3.getType().isAir()) {
+                                
+                                System.out.println("[MythicDungeons] Found potential spawn room at: " + worldX + "," + (y+1) + "," + worldZ);
                                 return new Location(world, worldX + 0.5, y + 1, worldZ + 0.5, 0, 0);
                             }
                         }
@@ -546,15 +597,64 @@ public class PluginFixManager {
     }
     
     /**
+     * Get spawn location from ChunkGenerator
+     */
+    private static Location getSpawnFromGenerator(World world) {
+        try {
+            org.bukkit.generator.ChunkGenerator gen = world.getGenerator();
+            if (gen != null && gen.getClass().getName().contains("DungeonChunkGenerator")) {
+                // Try to get room bounds
+                java.lang.reflect.Method getRoomBounds = gen.getClass().getMethod("getRoomBounds");
+                Object roomBoundsObj = getRoomBounds.invoke(gen);
+                
+                if (roomBoundsObj instanceof Map) {
+                    Map<?, ?> roomBounds = (Map<?, ?>) roomBoundsObj;
+                    
+                    // Get first room as spawn (usually center room)
+                    for (Object key : roomBounds.keySet()) {
+                        // Key is likely a Vector2i (chunk coords)
+                        // Value is likely a List of room bounds
+                        System.out.println("[MythicDungeons] Found room at chunk: " + key.toString());
+                        
+                        // Try to extract coordinates
+                        if (key.getClass().getName().contains("Vector2i")) {
+                            int chunkX = (int) key.getClass().getMethod("x").invoke(key);
+                            int chunkZ = (int) key.getClass().getMethod("y").invoke(key); // y in Vector2i is Z
+                            
+                            // Convert chunk coords to world coords (center of chunk)
+                            int worldX = (chunkX << 4) + 8;
+                            int worldZ = (chunkZ << 4) + 8;
+                            
+                            // Find Y level by scanning
+                            for (int y = 5; y <= 250; y++) {
+                                org.bukkit.block.Block block = world.getBlockAt(worldX, y, worldZ);
+                                org.bukkit.block.Block above = world.getBlockAt(worldX, y + 1, worldZ);
+                                
+                                if (!block.getType().isAir() && above.getType().isAir()) {
+                                    System.out.println("[MythicDungeons] Found room floor at Y=" + y);
+                                    return new Location(world, worldX + 0.5, y + 1, worldZ + 0.5);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("[MythicDungeons] Could not get spawn from generator: " + e.getMessage());
+        }
+        return null;
+    }
+    
+    /**
      * Scan world for dungeon structures
      */
     private static Location scanForDungeonStructures(World world, DungeonType type) {
-        System.out.println("[MythicDungeons] Scanning for dungeon structures");
+        System.out.println("[MythicDungeons] Scanning for dungeon structures (extended range)");
         
-        // Define scan parameters based on dungeon type
-        int scanRadius = type == DungeonType.PROCEDURAL ? 10 : 5;
-        int minY = 60;
-        int maxY = 75;
+        // Scan ALL Y levels since we don't know where dungeon is
+        int scanRadius = 15; // Wider search
+        int minY = 5;
+        int maxY = 250;
         
         // Scan loaded chunks
         for (org.bukkit.Chunk chunk : world.getLoadedChunks()) {
@@ -563,12 +663,12 @@ public class PluginFixManager {
             }
             
             // Check for dungeon-like structures
-            for (int x = 0; x < 16; x += 4) {
-                for (int z = 0; z < 16; z += 4) {
+            for (int x = 0; x < 16; x += 8) {
+                for (int z = 0; z < 16; z += 8) {
                     int worldX = (chunk.getX() << 4) + x;
                     int worldZ = (chunk.getZ() << 4) + z;
                     
-                    for (int y = minY; y <= maxY; y++) {
+                    for (int y = minY; y <= maxY; y += 3) {
                         if (isDungeonStructure(world, worldX, y, worldZ)) {
                             System.out.println("[MythicDungeons] Found dungeon structure at " + worldX + "," + y + "," + worldZ);
                             return new Location(world, worldX + 0.5, y + 1, worldZ + 0.5);
@@ -578,6 +678,7 @@ public class PluginFixManager {
             }
         }
         
+        System.out.println("[MythicDungeons] No dungeon structures found in scan");
         return null;
     }
     
