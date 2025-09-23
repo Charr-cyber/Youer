@@ -1,4 +1,4 @@
-<div align="center">
+<div align="center"> 
   <h1 align="center">Youer 1.21.1</h1>
   <h3 align="center">Minecraft NeoForge Hybrid server implementing the Bukkit/Spigot/Paper API</h3>
 
