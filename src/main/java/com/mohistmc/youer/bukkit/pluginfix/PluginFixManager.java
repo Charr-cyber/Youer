@@ -282,6 +282,51 @@ public class PluginFixManager {
         
         System.out.println("[MythicDungeons Debug] No correction needed or no room found during correction");
     }
+    
+    /**
+     * Layout generation patch - generation sorunlarını debug et
+     */
+    public static void patchLayoutGeneration(ClassNode node) {
+        System.out.println("[MythicDungeons Debug] Patching Layout generation class...");
+        
+        for (MethodNode method : node.methods) {
+            System.out.println("[MythicDungeons Debug] Found Layout method: " + method.name + method.desc);
+            
+            // Generation method'larını debug'la
+            if (method.name.equals("generate") || method.name.equals("build") ||
+                method.name.equals("paste") || method.name.contains("structure") ||
+                method.name.contains("place") || method.name.contains("Block")) {
+                
+                System.out.println("[MythicDungeons Debug] Found CRITICAL generation method: " + method.name);
+                addDebugLogging(method, "Layout." + method.name + " [GENERATION]");
+                
+                // Async'leri sync'e çevir
+                patchAsyncMethodCalls(method);
+                
+                // Timeout'ları artır
+                patchTimeouts(method);
+            }
+        }
+    }
+    
+    /**
+     * ChunkGenerator patch - chunk generation sorunlarını debug et
+     */
+    public static void patchChunkGenerator(ClassNode node) {
+        System.out.println("[MythicDungeons Debug] Patching DungeonChunkGenerator...");
+        
+        for (MethodNode method : node.methods) {
+            System.out.println("[MythicDungeons Debug] Found ChunkGenerator method: " + method.name + method.desc);
+            
+            // Chunk generation method'ları
+            if (method.name.contains("generate") || method.name.contains("populate") ||
+                method.name.contains("chunk") || method.name.contains("world")) {
+                
+                System.out.println("[MythicDungeons Debug] Found CRITICAL chunk generation method: " + method.name);
+                addDebugLogging(method, "ChunkGenerator." + method.name + " [CHUNK_GEN]");
+            }
+        }
+    }
 
     /**
      * Layout generation timeout'larını düzelt
@@ -470,6 +515,73 @@ public class PluginFixManager {
         
         method.instructions.insert(debugCode);
     }
+    
+    /**
+     * Async method calls'ları sync'e çevir
+     */
+    private static void patchAsyncMethodCalls(MethodNode method) {
+        for (AbstractInsnNode insn : method.instructions) {
+            if (insn instanceof MethodInsnNode mInsn) {
+                // Scheduler async calls
+                if (mInsn.name.equals("runTaskAsynchronously")) {
+                    mInsn.name = "runTask";
+                    System.out.println("[MythicDungeons Patch] Converted runTaskAsynchronously to runTask in " + method.name);
+                }
+                
+                // CompletableFuture async calls
+                if (mInsn.owner.equals("java/util/concurrent/CompletableFuture")) {
+                    if (mInsn.name.equals("supplyAsync")) {
+                        System.out.println("[MythicDungeons Debug] Found CompletableFuture.supplyAsync in " + method.name);
+                    }
+                }
+                
+                // Chunk async loading
+                if (mInsn.owner.equals("org/bukkit/World")) {
+                    if (mInsn.name.equals("getChunkAtAsync")) {
+                        mInsn.name = "getChunkAt";
+                        mInsn.desc = "(II)Lorg/bukkit/Chunk;";
+                        System.out.println("[MythicDungeons Patch] Converted getChunkAtAsync to sync in " + method.name);
+                    }
+                    if (mInsn.name.equals("loadChunkAsync")) {
+                        mInsn.name = "loadChunk";
+                        mInsn.desc = "(II)Z";
+                        System.out.println("[MythicDungeons Patch] Converted loadChunkAsync to sync in " + method.name);
+                    }
+                }
+            }
+        }
+    }
+    
+    /**
+     * Timeout değerlerini artırır
+     */
+    private static void patchTimeouts(MethodNode method) {
+        for (AbstractInsnNode insn : method.instructions) {
+            if (insn instanceof IntInsnNode iInsn) {
+                if (iInsn.operand > 0 && iInsn.operand < 1000) {
+                    int oldValue = iInsn.operand;
+                    iInsn.operand *= 10;
+                    System.out.println("[MythicDungeons Patch] Increased timeout from " + oldValue + " to " + iInsn.operand + " in " + method.name);
+                }
+            }
+            else if (insn instanceof LdcInsnNode lInsn) {
+                if (lInsn.cst instanceof Integer timeout) {
+                    if (timeout > 0 && timeout < 1000) {
+                        int oldValue = timeout;
+                        lInsn.cst = timeout * 10;
+                        System.out.println("[MythicDungeons Patch] Increased LDC timeout from " + oldValue + " to " + lInsn.cst + " in " + method.name);
+                    }
+                }
+                else if (lInsn.cst instanceof Long timeout) {
+                    if (timeout >= 1000L && timeout <= 10000L) {
+                        long oldValue = timeout;
+                        lInsn.cst = timeout * 3;
+                        System.out.println("[MythicDungeons Patch] Increased long timeout from " + oldValue + " to " + lInsn.cst + " in " + method.name);
+                    }
+                }
+            }
+        }
+    }
 
     // -------------------- PLUGIN PATCH --------------------
 
@@ -515,6 +627,17 @@ public class PluginFixManager {
                  "net.playavalon.mythicdungeons.instances.InstancePlayable" -> {
                 System.out.println("[MythicDungeons Patch] Patching alternative procedural instance: " + className);
                 return patch(clazz, PluginFixManager::patchProceduralInstance);
+            }
+            
+            // Generation classes - asıl sorun burada!
+            case "net.playavalon.mythicdungeons.api.generation.layout.Layout" -> {
+                System.out.println("[MythicDungeons Patch] Patching Layout generation class...");
+                return patch(clazz, PluginFixManager::patchLayoutGeneration);
+            }
+            
+            case "net.playavalon.mythicdungeons.api.chunkgenerators.DungeonChunkGenerator" -> {
+                System.out.println("[MythicDungeons Patch] Patching DungeonChunkGenerator...");
+                return patch(clazz, PluginFixManager::patchChunkGenerator);
             }
             // MythicDungeons patch - LAYOUT GENERATION FIX
             case "net.playavalon.mythicdungeons.api.generation.layout.Layout" -> {
