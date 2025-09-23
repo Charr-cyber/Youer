@@ -56,8 +56,8 @@ public class PluginFixManager {
         final Location finalTarget = target;
         final String finalDungeonType = dungeonType;
         
-        // Procedural için ÇOK uzun delay - generation tamamlansın
-        long delay = isProcedural ? 60L : 5L; // 3 saniye vs 250ms
+        // Procedural için ÇOK uzun delay - generation kesinlikle tamamlansın
+        long delay = isProcedural ? 200L : 5L; // 10 saniye vs 250ms
 
         // YOUER OPTIMIZE: Chunk'ı önceden yükle ve yapı oluşturmayı bekle
         Bukkit.getScheduler().runTask(
@@ -94,6 +94,15 @@ public class PluginFixManager {
                                         System.out.println("[MythicDungeons Patch] " + finalDungeonType + " teleport SUCCESS for " + 
                                             player.getName() + " to dungeon at " + finalTarget.getWorld().getName() + " " + 
                                             finalTarget.getX() + "," + finalTarget.getY() + "," + finalTarget.getZ());
+                                        
+                                        // PROCEDURAL için post-teleport düzeltme
+                                        if (isProcedural) {
+                                            Bukkit.getScheduler().runTaskLater(
+                                                Bukkit.getPluginManager().getPlugin("MythicDungeons"),
+                                                () -> attemptLocationCorrection(player, finalTarget.getWorld()),
+                                                40L // 2 saniye sonra konum düzelt
+                                            );
+                                        }
                                     } else {
                                         System.err.println("[MythicDungeons Patch] " + finalDungeonType + " teleport FAILED for " + player.getName());
                                     }
@@ -203,31 +212,20 @@ public class PluginFixManager {
             }
         }
         
-        // Eğer yüklü chunk'larda bulamazsa, sistematik arama
-        System.out.println("[MythicDungeons Debug] No room found in loaded chunks, trying systematic search...");
+        // Eğer yüklü chunk'larda bulamazsa, hızlı fallback
+        System.out.println("[MythicDungeons Debug] No room found in loaded chunks - dungeon may not be generated yet!");
+        System.out.println("[MythicDungeons Debug] Using intelligent fallback - will try spawn area with better Y coordinate");
         
-        int[] searchRanges = {50, 200, 500, 1000};
-        
-        for (int range : searchRanges) {
-            for (int x = -range; x <= range; x += 50) {
-                for (int z = -range; z <= range; z += 50) {
-                    if (Math.abs(x) <= 20 && Math.abs(z) <= 20) continue; // Skip spawn area
-                    
-                    // Bu chunk'ı yükle
-                    world.loadChunk(x >> 4, z >> 4);
-                    
-                    // Y seviyesinde ara
-                    for (int y = 65; y <= 75; y++) {
-                        org.bukkit.block.Block block = world.getBlockAt(x, y, z);
-                        org.bukkit.block.Block above = world.getBlockAt(x, y + 1, z);
-                        
-                        if (!block.getType().isAir() && above.getType().isAir()) {
-                            org.bukkit.Location foundLoc = new org.bukkit.Location(world, x + 0.5, y + 1, z + 0.5);
-                            System.out.println("[MythicDungeons Debug] Found dungeon room via systematic search at: " + x + "," + (y+1) + "," + z);
-                            return foundLoc;
-                        }
-                    }
-                }
+        // Spawn area'da ama daha iyi Y koordinatında dene
+        for (int y = 64; y <= 80; y++) {
+            org.bukkit.Location testLoc = new org.bukkit.Location(world, 8, y, 8);
+            org.bukkit.block.Block block = testLoc.getBlock();
+            org.bukkit.block.Block above = world.getBlockAt(8, y + 1, 8);
+            
+            // Eğer burada bir yer varsa kullan
+            if (!block.getType().isAir() && above.getType().isAir()) {
+                System.out.println("[MythicDungeons Debug] Found suitable spot in spawn area at Y=" + (y+1));
+                return new org.bukkit.Location(world, 8.5, y + 1, 8.5);
             }
         }
         
@@ -236,6 +234,53 @@ public class PluginFixManager {
         org.bukkit.Location fallback = new org.bukkit.Location(world, 100, 70, 100);
         world.loadChunk(fallback.getChunk());
         return fallback;
+    }
+    
+    /**
+     * Post-teleport location correction - generation tamamlandıktan sonra doğru yeri bul
+     */
+    private static void attemptLocationCorrection(Player player, org.bukkit.World world) {
+        System.out.println("[MythicDungeons Debug] Attempting post-teleport location correction for " + player.getName());
+        
+        // Şimdi generation tamamlanmış olmalı, tekrar ara
+        for (org.bukkit.Chunk chunk : world.getLoadedChunks()) {
+            int chunkX = chunk.getX();
+            int chunkZ = chunk.getZ();
+            
+            if (chunkX == 0 && chunkZ == 0) continue; // Skip spawn
+            
+            // Sadece birkaç chunk kontrol et - hızlı olsun
+            if (Math.abs(chunkX) <= 5 && Math.abs(chunkZ) <= 5) {
+                for (int x = 0; x < 16; x += 4) { // Her 4 block'ta bir
+                    for (int z = 0; z < 16; z += 4) {
+                        int worldX = (chunkX << 4) + x;
+                        int worldZ = (chunkZ << 4) + z;
+                        
+                        for (int y = 65; y <= 75; y++) {
+                            org.bukkit.block.Block block = world.getBlockAt(worldX, y, worldZ);
+                            org.bukkit.block.Block above = world.getBlockAt(worldX, y + 1, worldZ);
+                            org.bukkit.block.Block above2 = world.getBlockAt(worldX, y + 2, worldZ);
+                            
+                            if (!block.getType().isAir() && 
+                                above.getType().isAir() && 
+                                above2.getType().isAir() &&
+                                !block.getType().toString().contains("BEDROCK")) {
+                                
+                                org.bukkit.Location newLoc = new org.bukkit.Location(world, worldX + 0.5, y + 1, worldZ + 0.5);
+                                System.out.println("[MythicDungeons Debug] Found dungeon room during correction at: " + worldX + "," + (y+1) + "," + worldZ);
+                                
+                                // Oyuncuyu yeni konuma ışınla
+                                player.teleport(newLoc);
+                                System.out.println("[MythicDungeons Patch] CORRECTED player location to actual dungeon room!");
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        System.out.println("[MythicDungeons Debug] No correction needed or no room found during correction");
     }
 
     /**
