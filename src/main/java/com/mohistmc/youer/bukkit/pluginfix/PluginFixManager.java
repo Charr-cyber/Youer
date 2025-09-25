@@ -1009,18 +1009,20 @@ public class PluginFixManager {
         // Insert logging at the beginning
         method.instructions.insert(preCode);
         
-        // Find all teleportAsync calls and replace with sync teleport
+        // Find all teleportAsync calls and replace only the simple overload with our wrapper
         for (AbstractInsnNode insn : method.instructions) {
             if (insn instanceof MethodInsnNode mInsn) {
-                if (mInsn.name.equals("teleportAsync")) {
-                    // Replace teleportAsync with our safe teleport wrapper
+                if (mInsn.name.equals("teleportAsync") &&
+                        "(Lorg/bukkit/Location;)Ljava/util/concurrent/CompletableFuture;".equals(mInsn.desc)) {
+                    // Replace Player/Entity#teleportAsync(Location) with our safe static wrapper(Entity, Location)
                     mInsn.owner = Type.getInternalName(PluginFixManager.class);
                     mInsn.name = "safeTeleportWithChunkLoad";
                     mInsn.desc = "(Lorg/bukkit/entity/Entity;Lorg/bukkit/Location;)Ljava/util/concurrent/CompletableFuture;";
                     mInsn.itf = false;
                     mInsn.setOpcode(Opcodes.INVOKESTATIC);
-                    System.out.println("[MythicDungeons] Replaced teleportAsync with safeTeleportWithChunkLoad");
+                    System.out.println("[MythicDungeons] Replaced teleportAsync(Location) with safeTeleportWithChunkLoad");
                 }
+                // DO NOT touch teleportAsync with TeleportCause/TeleportFlag here; it will be handled by replaceAsyncTeleports
             }
         }
         
@@ -1033,11 +1035,13 @@ public class PluginFixManager {
     private static void replaceAsyncTeleports(MethodNode method) {
         for (AbstractInsnNode insn : method.instructions) {
             if (insn instanceof MethodInsnNode mInsn) {
-                if (mInsn.name.equals("teleportAsync")) {
+                if (mInsn.name.equals("teleportAsync") && "(Lorg/bukkit/Location;)Ljava/util/concurrent/CompletableFuture;".equals(mInsn.desc)) {
+                    // Simple overload: convert to sync teleport(Location)
                     mInsn.name = "teleport";
                     mInsn.desc = "(Lorg/bukkit/Location;)Z";
-                    System.out.println("[MythicDungeons] Replaced teleportAsync in " + method.name);
+                    System.out.println("[MythicDungeons] Replaced teleportAsync(Location) in " + method.name);
                 }
+                // Leave other overloads (with TeleportCause/TeleportFlag[]) intact to avoid VerifyError
             }
         }
     }
