@@ -102,12 +102,23 @@ public class PluginFixManager {
         
         // Small delay to ensure chunks are fully loaded, then teleport
         Bukkit.getScheduler().runTaskLater(getPlugin(), () -> {
+            // If it's a player, use dungeon-aware safe teleport to ensure we land inside a room
+            if (entity instanceof Player player) {
+                DungeonType type = detectDungeonType(target.getWorld().getName());
+                performSafeTeleport(player, target, type);
+                future.complete(true);
+                return;
+            }
+            
+            // Non-player entities: adjust to safe ground at target X/Z (preserve coords)
+            Location destination = findSafeGround(target);
+            
             // Use sync teleport
-            boolean success = entity.teleport(target);
+            boolean success = entity.teleport(destination);
             
             if (success) {
                 System.out.println("[MythicDungeons] Successfully teleported " + entity.getName() + 
-                    " to X:" + target.getBlockX() + " Y:" + target.getBlockY() + " Z:" + target.getBlockZ());
+                    " to X:" + destination.getBlockX() + " Y:" + destination.getBlockY() + " Z:" + destination.getBlockZ());
             } else {
                 System.err.println("[MythicDungeons] Failed to teleport " + entity.getName());
             }
