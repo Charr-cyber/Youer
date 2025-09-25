@@ -525,6 +525,19 @@ public class PluginFixManager {
         System.out.println("[MythicDungeons] Performing safe teleport for " + player.getName());
         System.out.println("[MythicDungeons] Using target from forceTeleport: X=" + target.getX() + " Y=" + target.getY() + " Z=" + target.getZ());
         
+        // If this is a PROCEDURAL dungeon, prefer direct API-based spawn resolution
+        if (type == DungeonType.PROCEDURAL) {
+            Location procSpawn = resolveProceduralSpawn(target.getWorld());
+            if (procSpawn != null) {
+                System.out.println("[MythicDungeons] Using procedural spawn from API/reflection");
+                Location safeProc = findSafeGround(procSpawn);
+                if (player.teleport(safeProc)) {
+                    System.out.println("[MythicDungeons] Successfully teleported " + player.getName() + " to procedural spawn!");
+                    return;
+                }
+            }
+        }
+
         // IMPORTANT: First check if the original target location is valid!
         if (target.getY() > 0 && target.getY() < 256) {
             // The target from MythicDungeons is likely correct, just ensure it's safe
@@ -553,6 +566,17 @@ public class PluginFixManager {
             }
         }
         
+        // Try to find room spawn near the target chunk via generator hints
+        Location generatorRoomSpawn = findSpawnRoomNear(target);
+        if (generatorRoomSpawn != null) {
+            System.out.println("[MythicDungeons] Using generator room spawn near target chunk");
+            Location safeRoom = findSafeGround(generatorRoomSpawn);
+            if (player.teleport(safeRoom)) {
+                System.out.println("[MythicDungeons] Successfully teleported " + player.getName() + " to generator-detected room!");
+                return;
+            }
+        }
+
         // Fallback: Find dungeon location
         System.out.println("[MythicDungeons] Original target invalid, searching for dungeon...");
         Location dungeonLocation = findDungeonLocation(target.getWorld(), type);
@@ -619,12 +643,25 @@ public class PluginFixManager {
             
             Class<?> dungeonManagerClass = Class.forName("net.playavalon.mythicdungeons.managers.DungeonManager");
             Object dungeonManager = dungeonManagerClass.getMethod("getInstance").invoke(null);
-            Object dungeonInstance = dungeonManagerClass.getMethod("getDungeonByWorld", String.class)
-                .invoke(dungeonManager, world.getName());
+            Object dungeonInstance = null;
+            for (String methodName : Arrays.asList("getDungeonByWorld", "getDungeon", "getInstanceByWorld", "getByWorld")) {
+                try {
+                    java.lang.reflect.Method m = dungeonManagerClass.getMethod(methodName, String.class);
+                    dungeonInstance = m.invoke(dungeonManager, world.getName());
+                    if (dungeonInstance != null) break;
+                } catch (NoSuchMethodException ignored) { }
+            }
             
             if (dungeonInstance != null) {
                 // Try to get spawn location
-                Object spawnLocation = dungeonInstance.getClass().getMethod("getSpawnLocation").invoke(dungeonInstance);
+                Object spawnLocation = null;
+                for (String methodName : Arrays.asList("getSpawnLocation", "getStartLocation", "getLobbyLocation", "getEntranceLocation")) {
+                    try {
+                        java.lang.reflect.Method m = dungeonInstance.getClass().getMethod(methodName);
+                        spawnLocation = m.invoke(dungeonInstance);
+                        if (spawnLocation instanceof Location) break;
+                    } catch (NoSuchMethodException ignored) { }
+                }
                 if (spawnLocation instanceof Location) {
                     return (Location) spawnLocation;
                 }
@@ -633,6 +670,82 @@ public class PluginFixManager {
             // API not available or failed
         }
         
+        return null;
+    }
+
+    /**
+     * Resolve procedural dungeon spawn via DungeonManager/InstancePlayable.
+     */
+    private static Location resolveProceduralSpawn(World world) {
+        try {
+            Plugin mythicPlugin = Bukkit.getPluginManager().getPlugin("MythicDungeons");
+            if (mythicPlugin == null) return null;
+
+            // Try to get the dungeon/instance by world name
+            Class<?> dungeonManagerClass = Class.forName("net.playavalon.mythicdungeons.managers.DungeonManager");
+            Object dungeonManager = dungeonManagerClass.getMethod("getInstance").invoke(null);
+
+            Object dungeonInstance = null;
+            for (String methodName : Arrays.asList("getDungeonByWorld", "getDungeon", "getInstanceByWorld", "getByWorld")) {
+                try {
+                    java.lang.reflect.Method m = dungeonManagerClass.getMethod(methodName, String.class);
+                    dungeonInstance = m.invoke(dungeonManager, world.getName());
+                    if (dungeonInstance != null) break;
+                } catch (NoSuchMethodException ignored) { }
+            }
+
+            if (dungeonInstance == null) return null;
+
+            // Direct spawn getters first
+            for (String methodName : Arrays.asList("getSpawnLocation", "getStartLocation", "getLobbyLocation", "getEntranceLocation")) {
+                try {
+                    java.lang.reflect.Method m = dungeonInstance.getClass().getMethod(methodName);
+                    Object loc = m.invoke(dungeonInstance);
+                    if (loc instanceof Location) return (Location) loc;
+                } catch (NoSuchMethodException ignored) { }
+            }
+
+            // If it's an InstancePlayable (procedural), try to navigate through playable/layout/start room
+            try {
+                // getPlayable()
+                java.lang.reflect.Method getPlayable = dungeonInstance.getClass().getMethod("getPlayable");
+                Object playable = getPlayable.invoke(dungeonInstance);
+                if (playable != null) {
+                    // Try direct center/room methods
+                    for (String methodName : Arrays.asList("getStartRoomCenter", "getCenterLocation")) {
+                        try {
+                            java.lang.reflect.Method m = playable.getClass().getMethod(methodName);
+                            Object loc = m.invoke(playable);
+                            if (loc instanceof Location) return (Location) loc;
+                        } catch (NoSuchMethodException ignored) { }
+                    }
+                    // getLayout() -> getStartRoom() -> getCenter / getLocation
+                    try {
+                        java.lang.reflect.Method getLayout = playable.getClass().getMethod("getLayout");
+                        Object layout = getLayout.invoke(playable);
+                        if (layout != null) {
+                            for (String sr : Arrays.asList("getStartRoom", "getRootRoom", "getSpawnRoom")) {
+                                try {
+                                    java.lang.reflect.Method getStartRoom = layout.getClass().getMethod(sr);
+                                    Object startRoom = getStartRoom.invoke(layout);
+                                    if (startRoom != null) {
+                                        for (String center : Arrays.asList("getCenter", "getCenterLocation", "getLocation")) {
+                                            try {
+                                                java.lang.reflect.Method m = startRoom.getClass().getMethod(center);
+                                                Object loc = m.invoke(startRoom);
+                                                if (loc instanceof Location) return (Location) loc;
+                                            } catch (NoSuchMethodException ignored) { }
+                                        }
+                                    }
+                                } catch (NoSuchMethodException ignored) { }
+                            }
+                        }
+                    } catch (NoSuchMethodException ignored) { }
+                }
+            } catch (NoSuchMethodException ignored) { }
+
+        } catch (Throwable ignored) {
+        }
         return null;
     }
     
@@ -762,6 +875,75 @@ public class PluginFixManager {
         }
         return null;
     }
+
+    /**
+     * Use DungeonChunkGenerator room bounds to find a room center near the target chunk
+     */
+    private static Location findSpawnRoomNear(Location target) {
+        try {
+            World world = target.getWorld();
+            org.bukkit.generator.ChunkGenerator gen = world.getGenerator();
+            if (gen != null && gen.getClass().getName().contains("DungeonChunkGenerator")) {
+                java.lang.reflect.Method getRoomBounds = gen.getClass().getMethod("getRoomBounds");
+                Object roomBoundsObj = getRoomBounds.invoke(gen);
+                if (roomBoundsObj instanceof Map) {
+                    Map<?, ?> roomBounds = (Map<?, ?>) roomBoundsObj;
+                    int targetChunkX = target.getBlockX() >> 4;
+                    int targetChunkZ = target.getBlockZ() >> 4;
+                    // Find the closest room key by chunk distance
+                    Object closestKey = null;
+                    int bestDist = Integer.MAX_VALUE;
+                    for (Object key : roomBounds.keySet()) {
+                        try {
+                            int cx, cz;
+                            if (key.getClass().getName().contains("Vector2i")) {
+                                cx = (int) key.getClass().getMethod("x").invoke(key);
+                                cz = (int) key.getClass().getMethod("y").invoke(key);
+                            } else {
+                                // Fallback: try common field names
+                                cx = (int) key.getClass().getField("x").get(key);
+                                cz = (int) key.getClass().getField("y").get(key);
+                            }
+                            int dx = cx - targetChunkX;
+                            int dz = cz - targetChunkZ;
+                            int dist = Math.abs(dx) + Math.abs(dz);
+                            if (dist < bestDist) {
+                                bestDist = dist;
+                                closestKey = key;
+                            }
+                        } catch (Throwable ignored) { }
+                    }
+                    if (closestKey != null) {
+                        int cx, cz;
+                        try {
+                            cx = (int) closestKey.getClass().getMethod("x").invoke(closestKey);
+                            cz = (int) closestKey.getClass().getMethod("y").invoke(closestKey);
+                        } catch (Throwable e) {
+                            try {
+                                cx = (int) closestKey.getClass().getField("x").get(closestKey);
+                                cz = (int) closestKey.getClass().getField("y").get(closestKey);
+                            } catch (Throwable ex) {
+                                return null;
+                            }
+                        }
+                        int worldX = (cx << 4) + 8;
+                        int worldZ = (cz << 4) + 8;
+                        // Scan vertical to find floor at room center
+                        for (int y = 5; y <= 250; y++) {
+                            org.bukkit.block.Block block = world.getBlockAt(worldX, y, worldZ);
+                            org.bukkit.block.Block above = world.getBlockAt(worldX, y + 1, worldZ);
+                            if (!block.getType().isAir() && above.getType().isAir()) {
+                                return new Location(world, worldX + 0.5, y + 1, worldZ + 0.5, target.getYaw(), target.getPitch());
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("[MythicDungeons] findSpawnRoomNear failed: " + e.getMessage());
+        }
+        return null;
+    }
     
     /**
      * Scan world for dungeon structures
@@ -842,6 +1024,21 @@ public class PluginFixManager {
         int startY = location.getBlockY();
         
         System.out.println("[MythicDungeons] Finding safe ground near Y=" + startY);
+
+        // Fast path: try a deep downward scan to find an actual room floor at target X/Z
+        // Look for solid floor with at least 2 air blocks above (typical room headroom)
+        for (int y = Math.min(startY, 250); y >= 5; y--) {
+            org.bukkit.block.Block floor = world.getBlockAt(x, y, z);
+            org.bukkit.block.Block feet = world.getBlockAt(x, y + 1, z);
+            org.bukkit.block.Block head = world.getBlockAt(x, y + 2, z);
+            if (!floor.getType().isAir() && feet.getType().isAir() && head.getType().isAir()) {
+                // Prefer dungeon-like materials if possible
+                if (isDungeonMaterial(floor.getType()) || y < startY - 4) {
+                    System.out.println("[MythicDungeons] Found room-like floor directly below at Y=" + (y + 1));
+                    return new Location(world, x + 0.5, y + 1, z + 0.5, location.getYaw(), location.getPitch());
+                }
+            }
+        }
         
         // Check if current location is already safe
         if (isSafeGround(world, x, startY - 1, z)) {
@@ -849,16 +1046,16 @@ public class PluginFixManager {
             return new Location(world, x + 0.5, startY, z + 0.5, location.getYaw(), location.getPitch());
         }
         
-        // First, try to find ground below (but not too far)
-        for (int y = startY - 1; y >= Math.max(0, startY - 10); y--) {
+        // First, try to find ground below (search deeper to reach dungeon height)
+        for (int y = startY - 1; y >= Math.max(0, startY - 200); y--) {
             if (isSafeGround(world, x, y, z)) {
                 System.out.println("[MythicDungeons] Found safe ground below at Y=" + (y + 1));
                 return new Location(world, x + 0.5, y + 1, z + 0.5, location.getYaw(), location.getPitch());
             }
         }
         
-        // Then try above (but not too far)
-        for (int y = startY; y <= Math.min(255, startY + 10); y++) {
+        // Then try above (limited range)
+        for (int y = startY; y <= Math.min(255, startY + 20); y++) {
             if (isSafeGround(world, x, y, z)) {
                 System.out.println("[MythicDungeons] Found safe ground above at Y=" + (y + 1));
                 return new Location(world, x + 0.5, y + 1, z + 0.5, location.getYaw(), location.getPitch());
@@ -867,9 +1064,9 @@ public class PluginFixManager {
         
         // If no safe ground found nearby, scan wider area
         System.out.println("[MythicDungeons] No safe ground nearby, scanning wider area...");
-        for (int dx = -3; dx <= 3; dx++) {
-            for (int dz = -3; dz <= 3; dz++) {
-                for (int y = startY - 5; y <= startY + 5; y++) {
+        for (int dx = -8; dx <= 8; dx++) {
+            for (int dz = -8; dz <= 8; dz++) {
+                for (int y = Math.max(5, startY - 80); y <= Math.min(255, startY + 20); y++) {
                     if (y >= 0 && y < 256 && isSafeGround(world, x + dx, y, z + dz)) {
                         System.out.println("[MythicDungeons] Found safe ground at offset (" + dx + "," + dz + ") Y=" + (y + 1));
                         return new Location(world, x + dx + 0.5, y + 1, z + dz + 0.5, location.getYaw(), location.getPitch());
