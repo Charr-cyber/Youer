@@ -353,6 +353,8 @@ public class PluginFixManager {
             }
             
             if (dungeonInstance != null) {
+                System.out.println("[MythicDungeons] Found dungeon instance: " + dungeonInstance.getClass().getSimpleName());
+                
                 // Try to get spawn location from dungeon instance
                 String[] spawnMethodNames = {"getSpawnLocation", "getStartLocation", "getLobbyLocation", "getEntranceLocation", "getPlayerSpawnLocation"};
                 
@@ -374,7 +376,7 @@ public class PluginFixManager {
                     java.lang.reflect.Method getPlayable = dungeonInstance.getClass().getMethod("getPlayable");
                     Object playable = getPlayable.invoke(dungeonInstance);
                     if (playable != null) {
-                        System.out.println("[MythicDungeons] Found playable instance, trying to get spawn...");
+                        System.out.println("[MythicDungeons] Found playable instance: " + playable.getClass().getSimpleName());
                         
                         // Try different spawn methods on playable
                         String[] playableSpawnMethods = {"getSpawnLocation", "getStartLocation", "getCenterLocation", "getPlayerSpawnLocation"};
@@ -392,12 +394,12 @@ public class PluginFixManager {
                             }
                         }
                         
-                        // Try to get layout and then start room
+                        // Try to get layout and then start room (PROCEDURAL DUNGEON KEY PATH)
                         try {
                             java.lang.reflect.Method getLayout = playable.getClass().getMethod("getLayout");
                             Object layout = getLayout.invoke(playable);
                             if (layout != null) {
-                                System.out.println("[MythicDungeons] Found layout, trying to get start room...");
+                                System.out.println("[MythicDungeons] Found layout: " + layout.getClass().getSimpleName());
                                 
                                 String[] startRoomMethods = {"getStartRoom", "getRootRoom", "getSpawnRoom", "getFirstRoom"};
                                 
@@ -446,9 +448,44 @@ public class PluginFixManager {
     }
 
     private static Object tryResolveDungeonManager() {
-        // Skip all reflection attempts that might trigger MythicBukkit loading
-        // MythicDungeons has soft dependency on MythicMobs, so we'll use fallback approach
-        System.out.println("[MythicDungeons] Skipping manager resolution to avoid MythicBukkit dependency");
+        try {
+            // Try to get DungeonManager via Bukkit services
+            Class<?> dungeonManagerClass = Class.forName("net.playavalon.mythicdungeons.managers.DungeonManager");
+            
+            // Try to find a static getInstance method
+            java.lang.reflect.Method[] methods = dungeonManagerClass.getDeclaredMethods();
+            for (java.lang.reflect.Method method : methods) {
+                if (method.getName().equals("getInstance") && 
+                    java.lang.reflect.Modifier.isStatic(method.getModifiers()) &&
+                    method.getParameterCount() == 0) {
+                    try {
+                        Object manager = method.invoke(null);
+                        if (manager != null) {
+                            System.out.println("[MythicDungeons] Found DungeonManager via getInstance()");
+                            return manager;
+                        }
+                    } catch (Exception e) {
+                        System.out.println("[MythicDungeons] getInstance() failed: " + e.getMessage());
+                    }
+                }
+            }
+            
+            // Try to get via Bukkit services
+            try {
+                Object service = Bukkit.getServicesManager().load(dungeonManagerClass);
+                if (service != null) {
+                    System.out.println("[MythicDungeons] Found DungeonManager via Bukkit services");
+                    return service;
+                }
+            } catch (Exception e) {
+                System.out.println("[MythicDungeons] Bukkit services failed: " + e.getMessage());
+            }
+            
+        } catch (Exception e) {
+            System.out.println("[MythicDungeons] DungeonManager resolution failed: " + e.getMessage());
+        }
+        
+        System.out.println("[MythicDungeons] Could not resolve DungeonManager, will use fallback teleportation");
         return null;
     }
     
