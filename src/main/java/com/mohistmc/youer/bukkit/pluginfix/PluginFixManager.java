@@ -67,7 +67,7 @@ public class PluginFixManager {
             return result;
         }
 
-        final int maxAttempts = 40; // ~20 seconds at 10 ticks
+        final int maxAttempts = 60; // ~30 seconds at 10 ticks for procedural generation
         final int periodTicks = 10;
 
         class RetryState { int attempts = 0; }
@@ -240,9 +240,30 @@ public class PluginFixManager {
             return dungeonRoom;
         }
         
-        // If no dungeon room found, just teleport to a reasonable height
-        System.out.println("[MythicDungeons] No dungeon room found, using reasonable height Y:65");
-        return new Location(world, x + 0.5, 65, z + 0.5, target.getYaw(), target.getPitch());
+        // If no dungeon room found, try to find any solid ground at reasonable height
+        System.out.println("[MythicDungeons] No dungeon room found, searching for solid ground...");
+        
+        // Search for solid ground in a wider area
+        for (int searchY = 70; searchY >= 10; searchY--) {
+            for (int searchX = x - 5; searchX <= x + 5; searchX++) {
+                for (int searchZ = z - 5; searchZ <= z + 5; searchZ++) {
+                    org.bukkit.block.Block ground = world.getBlockAt(searchX, searchY, searchZ);
+                    org.bukkit.block.Block above = world.getBlockAt(searchX, searchY + 1, searchZ);
+                    org.bukkit.block.Block above2 = world.getBlockAt(searchX, searchY + 2, searchZ);
+                    
+                    if (!ground.getType().isAir() && 
+                        above.getType().isAir() && 
+                        above2.getType().isAir()) {
+                        System.out.println("[MythicDungeons] Found solid ground at Y=" + (searchY + 1) + ", using as fallback");
+                        return new Location(world, searchX + 0.5, searchY + 1, searchZ + 0.5, target.getYaw(), target.getPitch());
+                    }
+                }
+            }
+        }
+        
+        // Last resort: create emergency platform
+        System.out.println("[MythicDungeons] No solid ground found, creating emergency platform at Y=65");
+        return createEmergencyPlatform(world, x, 65, z);
     }
     
     /**
@@ -252,9 +273,9 @@ public class PluginFixManager {
         try {
             System.out.println("[MythicDungeons] Trying to get spawn location from MythicDungeons API...");
             
-            // Try to get DungeonManager
-            Class<?> dungeonManagerClass = Class.forName("net.playavalon.mythicdungeons.managers.DungeonManager");
-            Object dungeonManager = dungeonManagerClass.getMethod("getInstance").invoke(null);
+            // Try to resolve a manager/provider from multiple sources
+            Object dungeonManager = tryResolveDungeonManager();
+            Class<?> dungeonManagerClass = dungeonManager != null ? dungeonManager.getClass() : null;
             
             // Try different methods to get dungeon instance
             Object dungeonInstance = null;
@@ -262,8 +283,28 @@ public class PluginFixManager {
             
             for (String methodName : methodNames) {
                 try {
-                    java.lang.reflect.Method method = dungeonManagerClass.getMethod(methodName, String.class);
-                    dungeonInstance = method.invoke(dungeonManager, world.getName());
+                    // Try World parameter first
+                    if (dungeonManagerClass != null) {
+                        java.lang.reflect.Method methodWorld = null;
+                        try { methodWorld = dungeonManagerClass.getMethod(methodName, World.class); } catch (Exception ignore) {}
+                        if (methodWorld != null) {
+                            dungeonInstance = methodWorld.invoke(dungeonManager, world);
+                            if (dungeonInstance != null) {
+                                System.out.println("[MythicDungeons] Found dungeon instance using method(World): " + methodName);
+                                break;
+                            }
+                        }
+                        // Then String world name
+                        java.lang.reflect.Method methodStr = null;
+                        try { methodStr = dungeonManagerClass.getMethod(methodName, String.class); } catch (Exception ignore) {}
+                        if (methodStr != null) {
+                            dungeonInstance = methodStr.invoke(dungeonManager, world.getName());
+                            if (dungeonInstance != null) {
+                                System.out.println("[MythicDungeons] Found dungeon instance using method(String): " + methodName);
+                                break;
+                            }
+                        }
+                    }
                     if (dungeonInstance != null) {
                         System.out.println("[MythicDungeons] Found dungeon instance using method: " + methodName);
                         break;
@@ -365,15 +406,59 @@ public class PluginFixManager {
         
         return null;
     }
+
+    private static Object tryResolveDungeonManager() {
+        try {
+            // 1) Via Bukkit plugin main class accessor methods
+            Plugin mythic = Bukkit.getPluginManager().getPlugin("MythicDungeons");
+            if (mythic != null) {
+                // Common accessors
+                String[] accessors = {"getDungeonManager", "getManager", "getInstanceManager", "getInstances", "getDungeons"};
+                for (String accessor : accessors) {
+                    try {
+                        java.lang.reflect.Method m = mythic.getClass().getMethod(accessor);
+                        Object res = m.invoke(mythic);
+                        if (res != null) return res;
+                    } catch (Exception ignore) {}
+                }
+            }
+        } catch (Exception ignore) {}
+        try {
+            // 2) Via service API
+            Class<?> svcClass = Class.forName("net.playavalon.mythicdungeons.api.MythicDungeonsService");
+            Object service = Bukkit.getServicesManager().load(svcClass);
+            if (service != null) return service;
+        } catch (Exception ignore) {}
+        try {
+            // 3) Via static singleton on main class
+            Class<?> main = Class.forName("net.playavalon.mythicdungeons.MythicDungeons");
+            try {
+                java.lang.reflect.Method get = main.getMethod("getInstance");
+                Object inst = get.invoke(null);
+                if (inst != null) {
+                    String[] accessors = {"getDungeonManager", "getManager", "getInstanceManager"};
+                    for (String accessor : accessors) {
+                        try {
+                            java.lang.reflect.Method m = inst.getClass().getMethod(accessor);
+                            Object res = m.invoke(inst);
+                            if (res != null) return res;
+                        } catch (Exception ignore) {}
+                    }
+                }
+            } catch (Exception ignore) {}
+        } catch (Exception ignore) {}
+        return null;
+    }
     
     /**
      * Find dungeon room at specific coordinates by scanning downward
+     * Enhanced for procedural dungeons with better room detection
      */
     private static Location findDungeonRoomAtCoordinates(World world, int x, int z) {
         System.out.println("[MythicDungeons] Scanning for dungeon room at X:" + x + " Z:" + z);
         
-        // Scan from Y=128 down to Y=5 to find dungeon floor
-        for (int y = 128; y >= 5; y--) {
+        // For procedural dungeons, scan from Y=80 down to Y=10 (typical dungeon range)
+        for (int y = 80; y >= 10; y--) {
             org.bukkit.block.Block floor = world.getBlockAt(x, y, z);
             org.bukkit.block.Block above1 = world.getBlockAt(x, y + 1, z);
             org.bukkit.block.Block above2 = world.getBlockAt(x, y + 2, z);
@@ -387,31 +472,35 @@ public class PluginFixManager {
                 
                 // Check if it looks like a dungeon room (has some space)
                 int airCount = 0;
-                for (int dx = -2; dx <= 2; dx++) {
-                    for (int dz = -2; dz <= 2; dz++) {
-                        for (int dy = 1; dy <= 3; dy++) {
-                            if (world.getBlockAt(x + dx, y + dy, z + dz).getType().isAir()) {
+                int solidCount = 0;
+                for (int dx = -3; dx <= 3; dx++) {
+                    for (int dz = -3; dz <= 3; dz++) {
+                        for (int dy = 1; dy <= 4; dy++) {
+                            org.bukkit.block.Block checkBlock = world.getBlockAt(x + dx, y + dy, z + dz);
+                            if (checkBlock.getType().isAir()) {
                                 airCount++;
+                            } else if (!checkBlock.getType().isAir()) {
+                                solidCount++;
                             }
                         }
                     }
                 }
                 
-                // If we found enough air space, it's likely a room
-                if (airCount >= 20) {
-                    System.out.println("[MythicDungeons] Confirmed dungeon room at Y=" + (y + 1) + " with " + airCount + " air blocks");
+                // If we found enough air space and some solid walls, it's likely a room
+                if (airCount >= 30 && solidCount >= 10) {
+                    System.out.println("[MythicDungeons] Confirmed dungeon room at Y=" + (y + 1) + " with " + airCount + " air blocks, " + solidCount + " solid blocks");
                     return new Location(world, x + 0.5, y + 1, z + 0.5);
                 }
             }
         }
         
-        // If no room found at exact coordinates, try nearby
+        // If no room found at exact coordinates, try nearby with wider search
         System.out.println("[MythicDungeons] No room found at exact coordinates, scanning nearby...");
-        for (int dx = -5; dx <= 5; dx++) {
-            for (int dz = -5; dz <= 5; dz++) {
+        for (int dx = -10; dx <= 10; dx++) {
+            for (int dz = -10; dz <= 10; dz++) {
                 if (dx == 0 && dz == 0) continue; // Skip center, already checked
                 
-                for (int y = 128; y >= 5; y--) {
+                for (int y = 80; y >= 10; y--) {
                     org.bukkit.block.Block floor = world.getBlockAt(x + dx, y, z + dz);
                     org.bukkit.block.Block above1 = world.getBlockAt(x + dx, y + 1, z + dz);
                     org.bukkit.block.Block above2 = world.getBlockAt(x + dx, y + 2, z + dz);
@@ -420,8 +509,22 @@ public class PluginFixManager {
                         above1.getType().isAir() && 
                         above2.getType().isAir()) {
                         
-                        System.out.println("[MythicDungeons] Found nearby room at X:" + (x + dx) + " Y:" + (y + 1) + " Z:" + (z + dz));
-                        return new Location(world, x + dx + 0.5, y + 1, z + dz + 0.5);
+                        // Quick validation for nearby rooms
+                        int nearbyAirCount = 0;
+                        for (int checkDx = -2; checkDx <= 2; checkDx++) {
+                            for (int checkDz = -2; checkDz <= 2; checkDz++) {
+                                for (int checkDy = 1; checkDy <= 3; checkDy++) {
+                                    if (world.getBlockAt(x + dx + checkDx, y + checkDy, z + dz + checkDz).getType().isAir()) {
+                                        nearbyAirCount++;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if (nearbyAirCount >= 15) {
+                            System.out.println("[MythicDungeons] Found nearby room at X:" + (x + dx) + " Y:" + (y + 1) + " Z:" + (z + dz) + " with " + nearbyAirCount + " air blocks");
+                            return new Location(world, x + dx + 0.5, y + 1, z + dz + 0.5);
+                        }
                     }
                 }
             }
