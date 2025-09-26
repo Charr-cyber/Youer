@@ -57,7 +57,7 @@ public class PluginFixManager {
     }
     
     /**
-     * Perform simple teleportation without complex dungeon scanning
+     * Perform simple teleportation with safe ground detection
      */
     private static void performSimpleTeleport(Entity entity, Location target, CompletableFuture<Boolean> future) {
         World world = target.getWorld();
@@ -80,18 +80,219 @@ public class PluginFixManager {
         
         // Wait for dungeon generation to complete, then teleport
         Bukkit.getScheduler().runTaskLater(getPlugin(), () -> {
-            // Simple teleport - let MythicDungeons handle the coordinates
-            boolean success = entity.teleport(target);
+            // Find safe ground at the target location
+            Location safeLocation = findSafeGroundAtTarget(target);
+            
+            boolean success = entity.teleport(safeLocation);
             
             if (success) {
                 System.out.println("[MythicDungeons] Successfully teleported " + entity.getName() + 
-                    " to X:" + target.getBlockX() + " Y:" + target.getBlockY() + " Z:" + target.getBlockZ());
+                    " to X:" + safeLocation.getBlockX() + " Y:" + safeLocation.getBlockY() + " Z:" + safeLocation.getBlockZ());
             } else {
                 System.err.println("[MythicDungeons] Failed to teleport " + entity.getName());
             }
             
             future.complete(success);
         }, 20L); // 1 second delay to allow dungeon generation
+    }
+    
+    /**
+     * Find safe ground at the target location using MythicDungeons DungeonChunkGenerator
+     */
+    private static Location findSafeGroundAtTarget(Location target) {
+        World world = target.getWorld();
+        int x = target.getBlockX();
+        int z = target.getBlockZ();
+        int startY = target.getBlockY();
+        
+        System.out.println("[MythicDungeons] Finding safe ground at target X:" + x + " Z:" + z + " starting from Y:" + startY);
+        
+        // First try to get actual dungeon room from ChunkGenerator
+        Location dungeonRoom = getDungeonRoomFromGenerator(world, x, z);
+        if (dungeonRoom != null) {
+            System.out.println("[MythicDungeons] Found dungeon room from ChunkGenerator at Y:" + dungeonRoom.getBlockY());
+            return dungeonRoom;
+        }
+        
+        // First check if the original target is safe
+        if (isSafeGround(world, x, startY - 1, z)) {
+            System.out.println("[MythicDungeons] Original target is safe!");
+            return new Location(world, x + 0.5, startY, z + 0.5, target.getYaw(), target.getPitch());
+        }
+        
+        // Scan downward from target Y to find dungeon floor
+        for (int y = startY - 1; y >= 5; y--) {
+            if (isSafeGround(world, x, y, z)) {
+                System.out.println("[MythicDungeons] Found safe ground below at Y:" + (y + 1));
+                return new Location(world, x + 0.5, y + 1, z + 0.5, target.getYaw(), target.getPitch());
+            }
+        }
+        
+        // If no safe ground found directly below, scan in a small radius
+        System.out.println("[MythicDungeons] No safe ground directly below, scanning nearby...");
+        for (int dx = -3; dx <= 3; dx++) {
+            for (int dz = -3; dz <= 3; dz++) {
+                for (int y = Math.max(5, startY - 50); y <= startY + 10; y++) {
+                    if (isSafeGround(world, x + dx, y, z + dz)) {
+                        System.out.println("[MythicDungeons] Found safe ground nearby at X:" + (x + dx) + " Y:" + (y + 1) + " Z:" + (z + dz));
+                        return new Location(world, x + dx + 0.5, y + 1, z + dz + 0.5, target.getYaw(), target.getPitch());
+                    }
+                }
+            }
+        }
+        
+        // Last resort: create a platform at a reasonable height
+        System.out.println("[MythicDungeons] No safe ground found, creating platform at Y:70");
+        return createEmergencyPlatform(world, x, 70, z);
+    }
+    
+    /**
+     * Get actual dungeon room location from MythicDungeons DungeonChunkGenerator
+     */
+    private static Location getDungeonRoomFromGenerator(World world, int targetX, int targetZ) {
+        try {
+            org.bukkit.generator.ChunkGenerator gen = world.getGenerator();
+            if (gen != null && gen.getClass().getName().contains("DungeonChunkGenerator")) {
+                System.out.println("[MythicDungeons] Found DungeonChunkGenerator, getting room bounds...");
+                
+                // Get room bounds from ChunkGenerator
+                java.lang.reflect.Method getRoomBounds = gen.getClass().getMethod("getRoomBounds");
+                Object roomBoundsObj = getRoomBounds.invoke(gen);
+                
+                if (roomBoundsObj instanceof Map) {
+                    Map<?, ?> roomBounds = (Map<?, ?>) roomBoundsObj;
+                    System.out.println("[MythicDungeons] Found " + roomBounds.size() + " rooms in ChunkGenerator");
+                    
+                    // Find the closest room to target coordinates
+                    Object closestRoomKey = null;
+                    int bestDistance = Integer.MAX_VALUE;
+                    int targetChunkX = targetX >> 4;
+                    int targetChunkZ = targetZ >> 4;
+                    
+                    for (Object key : roomBounds.keySet()) {
+                        try {
+                            int chunkX, chunkZ;
+                            if (key.getClass().getName().contains("Vector2i")) {
+                                chunkX = (int) key.getClass().getMethod("x").invoke(key);
+                                chunkZ = (int) key.getClass().getMethod("y").invoke(key);
+                            } else {
+                                // Try field access as fallback
+                                chunkX = (int) key.getClass().getField("x").get(key);
+                                chunkZ = (int) key.getClass().getField("y").get(key);
+                            }
+                            
+                            int distance = Math.abs(chunkX - targetChunkX) + Math.abs(chunkZ - targetChunkZ);
+                            if (distance < bestDistance) {
+                                bestDistance = distance;
+                                closestRoomKey = key;
+                            }
+                            
+                            System.out.println("[MythicDungeons] Room at chunk (" + chunkX + "," + chunkZ + ") distance: " + distance);
+                        } catch (Exception e) {
+                            System.out.println("[MythicDungeons] Could not extract chunk coordinates from room key: " + e.getMessage());
+                        }
+                    }
+                    
+                    if (closestRoomKey != null) {
+                        int chunkX, chunkZ;
+                        try {
+                            if (closestRoomKey.getClass().getName().contains("Vector2i")) {
+                                chunkX = (int) closestRoomKey.getClass().getMethod("x").invoke(closestRoomKey);
+                                chunkZ = (int) closestRoomKey.getClass().getMethod("y").invoke(closestRoomKey);
+                            } else {
+                                chunkX = (int) closestRoomKey.getClass().getField("x").get(closestRoomKey);
+                                chunkZ = (int) closestRoomKey.getClass().getField("y").get(closestRoomKey);
+                            }
+                            
+                            // Convert chunk coordinates to world coordinates (center of chunk)
+                            int worldX = (chunkX << 4) + 8;
+                            int worldZ = (chunkZ << 4) + 8;
+                            
+                            System.out.println("[MythicDungeons] Using closest room at chunk (" + chunkX + "," + chunkZ + ") world (" + worldX + "," + worldZ + ")");
+                            
+                            // Find the Y level of the room floor
+                            for (int y = 5; y <= 250; y++) {
+                                org.bukkit.block.Block floor = world.getBlockAt(worldX, y, worldZ);
+                                org.bukkit.block.Block above1 = world.getBlockAt(worldX, y + 1, worldZ);
+                                org.bukkit.block.Block above2 = world.getBlockAt(worldX, y + 2, worldZ);
+                                
+                                // Look for solid floor with air above (typical room pattern)
+                                if (!floor.getType().isAir() && 
+                                    above1.getType().isAir() && 
+                                    above2.getType().isAir()) {
+                                    
+                                    System.out.println("[MythicDungeons] Found dungeon room floor at Y=" + y);
+                                    return new Location(world, worldX + 0.5, y + 1, worldZ + 0.5);
+                                }
+                            }
+                            
+                            // If no floor found, try scanning a bit around the center
+                            for (int dx = -2; dx <= 2; dx++) {
+                                for (int dz = -2; dz <= 2; dz++) {
+                                    for (int y = 5; y <= 250; y++) {
+                                        org.bukkit.block.Block floor = world.getBlockAt(worldX + dx, y, worldZ + dz);
+                                        org.bukkit.block.Block above1 = world.getBlockAt(worldX + dx, y + 1, worldZ + dz);
+                                        org.bukkit.block.Block above2 = world.getBlockAt(worldX + dx, y + 2, worldZ + dz);
+                                        
+                                        if (!floor.getType().isAir() && 
+                                            above1.getType().isAir() && 
+                                            above2.getType().isAir()) {
+                                            
+                                            System.out.println("[MythicDungeons] Found dungeon room floor at Y=" + y + " with offset (" + dx + "," + dz + ")");
+                                            return new Location(world, worldX + dx + 0.5, y + 1, worldZ + dz + 0.5);
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (Exception e) {
+                            System.out.println("[MythicDungeons] Could not extract coordinates from closest room: " + e.getMessage());
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("[MythicDungeons] Could not get room from ChunkGenerator: " + e.getMessage());
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Check if location has safe ground
+     */
+    private static boolean isSafeGround(World world, int x, int y, int z) {
+        if (y < 0 || y >= 256) return false;
+        
+        org.bukkit.block.Block floor = world.getBlockAt(x, y, z);
+        org.bukkit.block.Block feet = world.getBlockAt(x, y + 1, z);
+        org.bukkit.block.Block head = world.getBlockAt(x, y + 2, z);
+        
+        return !floor.getType().isAir() && 
+               !floor.isLiquid() &&
+               feet.getType().isAir() && 
+               head.getType().isAir();
+    }
+    
+    /**
+     * Create emergency platform for safe landing
+     */
+    private static Location createEmergencyPlatform(World world, int x, int y, int z) {
+        System.out.println("[MythicDungeons] Creating emergency platform at " + x + "," + y + "," + z);
+        
+        // Create 3x3 platform
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                // Create solid floor
+                world.getBlockAt(x + dx, y, z + dz).setType(Material.STONE);
+                
+                // Clear space above
+                for (int dy = 1; dy <= 3; dy++) {
+                    world.getBlockAt(x + dx, y + dy, z + dz).setType(Material.AIR);
+                }
+            }
+        }
+        
+        return new Location(world, x + 0.5, y + 1, z + 0.5);
     }
     
     /**
@@ -153,7 +354,7 @@ public class PluginFixManager {
     private static void patchTeleportMethod(MethodNode method) {
         System.out.println("[MythicDungeons] Patching forceTeleport method: " + method.name);
         
-        // Add logging at the beginning
+        // Add detailed logging at the beginning
         InsnList preCode = new InsnList();
         preCode.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
         preCode.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
@@ -166,6 +367,28 @@ public class PluginFixManager {
         preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
         preCode.add(new VarInsnNode(Opcodes.ALOAD, 1));
         preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/Object;)Ljava/lang/StringBuilder;", false));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        
+        // Add detailed coordinate logging
+        preCode.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        preCode.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
+        preCode.add(new InsnNode(Opcodes.DUP));
+        preCode.add(new LdcInsnNode("[MythicDungeons] Target coordinates: X="));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false));
+        preCode.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "org/bukkit/Location", "getX", "()D", false));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(D)Ljava/lang/StringBuilder;", false));
+        preCode.add(new LdcInsnNode(" Y="));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        preCode.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "org/bukkit/Location", "getY", "()D", false));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(D)Ljava/lang/StringBuilder;", false));
+        preCode.add(new LdcInsnNode(" Z="));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        preCode.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "org/bukkit/Location", "getZ", "()D", false));
+        preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(D)Ljava/lang/StringBuilder;", false));
         preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
         preCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
         
