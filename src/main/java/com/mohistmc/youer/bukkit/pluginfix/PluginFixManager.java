@@ -507,9 +507,50 @@ public class PluginFixManager {
         try {
             System.out.println("[MythicDungeons] Attempting to resolve DungeonManager...");
             
-            // Method 1: Try MythicDungeons.inst().getDungeonManager() - This is the correct API
+            // Method 1: Try MythicDungeonsService via Bukkit services (RECOMMENDED APPROACH)
+            try {
+                Class<?> mythicDungeonsServiceClass = Class.forName("net.playavalon.mythicdungeons.api.MythicDungeonsService");
+                Object service = Bukkit.getServicesManager().load(mythicDungeonsServiceClass);
+                if (service != null) {
+                    System.out.println("[MythicDungeons] Found MythicDungeonsService via Bukkit services");
+                    System.out.println("[MythicDungeons] Service class: " + service.getClass().getName());
+                    
+                    // Debug: List all available methods
+                    java.lang.reflect.Method[] methods = service.getClass().getMethods();
+                    System.out.println("[MythicDungeons] Available methods on service:");
+                    for (java.lang.reflect.Method method : methods) {
+                        if (method.getName().toLowerCase().contains("dungeon") || method.getName().toLowerCase().contains("manager")) {
+                            System.out.println("[MythicDungeons] - " + method.getName() + "(" + java.util.Arrays.toString(method.getParameterTypes()) + ")");
+                        }
+                    }
+                    
+                    // Try to get getDungeonManager() method from the service
+                    java.lang.reflect.Method getDungeonManagerMethod = service.getClass().getMethod("getDungeonManager");
+                    Object dungeonManager = getDungeonManagerMethod.invoke(service);
+                    
+                    if (dungeonManager != null) {
+                        System.out.println("[MythicDungeons] Found DungeonManager via MythicDungeonsService.getDungeonManager()");
+                        return dungeonManager;
+                    }
+                }
+            } catch (Exception e) {
+                System.out.println("[MythicDungeons] MythicDungeonsService approach failed: " + e.getMessage());
+                e.printStackTrace();
+            }
+            
+            // Method 2: Try MythicDungeons.inst().getDungeonManager() - Alternative approach
             try {
                 Class<?> mythicDungeonsClass = Class.forName("net.playavalon.mythicdungeons.MythicDungeons");
+                System.out.println("[MythicDungeons] Found MythicDungeons class: " + mythicDungeonsClass.getName());
+                
+                // Debug: List all static methods
+                java.lang.reflect.Method[] staticMethods = mythicDungeonsClass.getMethods();
+                System.out.println("[MythicDungeons] Available static methods on MythicDungeons:");
+                for (java.lang.reflect.Method method : staticMethods) {
+                    if (java.lang.reflect.Modifier.isStatic(method.getModifiers())) {
+                        System.out.println("[MythicDungeons] - " + method.getName() + "(" + java.util.Arrays.toString(method.getParameterTypes()) + ")");
+                    }
+                }
                 
                 // Look for static inst() method
                 java.lang.reflect.Method instMethod = mythicDungeonsClass.getMethod("inst");
@@ -517,6 +558,16 @@ public class PluginFixManager {
                 
                 if (mythicDungeonsInstance != null) {
                     System.out.println("[MythicDungeons] Found MythicDungeons instance via inst()");
+                    System.out.println("[MythicDungeons] Instance class: " + mythicDungeonsInstance.getClass().getName());
+                    
+                    // Debug: List all methods on the instance
+                    java.lang.reflect.Method[] instanceMethods = mythicDungeonsInstance.getClass().getMethods();
+                    System.out.println("[MythicDungeons] Available methods on instance:");
+                    for (java.lang.reflect.Method method : instanceMethods) {
+                        if (method.getName().toLowerCase().contains("dungeon") || method.getName().toLowerCase().contains("manager")) {
+                            System.out.println("[MythicDungeons] - " + method.getName() + "(" + java.util.Arrays.toString(method.getParameterTypes()) + ")");
+                        }
+                    }
                     
                     // Try to get getDungeonManager() method
                     java.lang.reflect.Method getDungeonManagerMethod = mythicDungeonsInstance.getClass().getMethod("getDungeonManager");
@@ -529,9 +580,10 @@ public class PluginFixManager {
                 }
             } catch (Exception e) {
                 System.out.println("[MythicDungeons] MythicDungeons.inst().getDungeonManager() failed: " + e.getMessage());
+                e.printStackTrace();
             }
             
-            // Method 2: Try direct DungeonManager static access
+            // Method 3: Try direct DungeonManager static access
             try {
                 Class<?> dungeonManagerClass = Class.forName("net.playavalon.mythicdungeons.managers.DungeonManager");
                 
@@ -556,16 +608,50 @@ public class PluginFixManager {
                 System.out.println("[MythicDungeons] Direct DungeonManager access failed: " + e.getMessage());
             }
             
-            // Method 3: Try via Bukkit services
+            // Method 4: Try via Bukkit services with DungeonManager class directly
             try {
                 Class<?> dungeonManagerClass = Class.forName("net.playavalon.mythicdungeons.managers.DungeonManager");
                 Object service = Bukkit.getServicesManager().load(dungeonManagerClass);
                 if (service != null) {
-                    System.out.println("[MythicDungeons] Found DungeonManager via Bukkit services");
+                    System.out.println("[MythicDungeons] Found DungeonManager via Bukkit services (direct)");
                     return service;
                 }
             } catch (Exception e) {
-                System.out.println("[MythicDungeons] Bukkit services failed: " + e.getMessage());
+                System.out.println("[MythicDungeons] Bukkit services (direct) failed: " + e.getMessage());
+            }
+            
+            // Method 5: Try to find any plugin that might have dungeon-related methods
+            try {
+                Plugin mythicDungeonsPlugin = Bukkit.getPluginManager().getPlugin("MythicDungeons");
+                if (mythicDungeonsPlugin != null) {
+                    System.out.println("[MythicDungeons] Found MythicDungeons plugin: " + mythicDungeonsPlugin.getClass().getName());
+                    
+                    // Debug: List all methods on the plugin
+                    java.lang.reflect.Method[] pluginMethods = mythicDungeonsPlugin.getClass().getMethods();
+                    System.out.println("[MythicDungeons] Available methods on plugin:");
+                    for (java.lang.reflect.Method method : pluginMethods) {
+                        if (method.getName().toLowerCase().contains("dungeon") || method.getName().toLowerCase().contains("manager")) {
+                            System.out.println("[MythicDungeons] - " + method.getName() + "(" + java.util.Arrays.toString(method.getParameterTypes()) + ")");
+                        }
+                    }
+                    
+                    // Try common method names
+                    String[] commonMethodNames = {"getDungeonManager", "getManager", "getDungeonManager", "getInstance"};
+                    for (String methodName : commonMethodNames) {
+                        try {
+                            java.lang.reflect.Method method = mythicDungeonsPlugin.getClass().getMethod(methodName);
+                            Object result = method.invoke(mythicDungeonsPlugin);
+                            if (result != null) {
+                                System.out.println("[MythicDungeons] Found manager via plugin method: " + methodName);
+                                return result;
+                            }
+                        } catch (Exception e) {
+                            // Try next method
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                System.out.println("[MythicDungeons] Plugin method approach failed: " + e.getMessage());
             }
             
         } catch (Exception e) {
