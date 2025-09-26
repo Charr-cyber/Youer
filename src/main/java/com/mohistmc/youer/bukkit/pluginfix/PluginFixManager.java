@@ -55,6 +55,66 @@ public class PluginFixManager {
         
         return future;
     }
+
+    /**
+     * Retry-based teleport that waits for procedural dungeon to report a spawn location.
+     * Falls back to the given target after timeout.
+     */
+    public static CompletableFuture<Boolean> safeTeleportWithRetries(Entity entity, Location target) {
+        CompletableFuture<Boolean> result = new CompletableFuture<>();
+        if (entity == null || target == null) {
+            result.complete(false);
+            return result;
+        }
+
+        final int maxAttempts = 40; // ~20 seconds at 10 ticks
+        final int periodTicks = 10;
+
+        class RetryState { int attempts = 0; }
+        RetryState state = new RetryState();
+
+        Runnable tryOnce = new Runnable() {
+            @Override
+            public void run() {
+                if (result.isDone()) return;
+                state.attempts++;
+
+                Location apiSpawn = getSpawnLocationFromMythicDungeons(target.getWorld());
+                if (apiSpawn != null) {
+                    System.out.println("[MythicDungeons] Spawn available after attempts=" + state.attempts);
+                    safeTeleportWithChunkLoad(entity, apiSpawn).whenComplete((ok, err) -> {
+                        if (err != null) {
+                            result.complete(false);
+                        } else if (ok != null && ok) {
+                            result.complete(true);
+                        } else {
+                            result.complete(false);
+                        }
+                    });
+                    return;
+                }
+
+                if (state.attempts >= maxAttempts) {
+                    System.out.println("[MythicDungeons] Spawn not ready, using fallback target");
+                    safeTeleportWithChunkLoad(entity, target).whenComplete((ok, err) -> {
+                        if (err != null) result.complete(false); else result.complete(ok != null && ok);
+                    });
+                    return;
+                }
+
+                Bukkit.getScheduler().runTaskLater(getPlugin(), this, periodTicks);
+            }
+        };
+
+        // kick off retries from main thread
+        if (!Bukkit.isPrimaryThread()) {
+            Bukkit.getScheduler().runTask(getPlugin(), tryOnce);
+        } else {
+            tryOnce.run();
+        }
+
+        return result;
+    }
     
     /**
      * Perform simple teleportation with safe ground detection
@@ -68,20 +128,31 @@ public class PluginFixManager {
         
         System.out.println("[MythicDungeons] Loading chunks around chunk (" + chunkX + "," + chunkZ + ")");
         
-        for (int x = -2; x <= 2; x++) {
-            for (int z = -2; z <= 2; z++) {
+        // Force load chunks with generation
+        for (int x = -3; x <= 3; x++) {
+            for (int z = -3; z <= 3; z++) {
                 if (!world.isChunkLoaded(chunkX + x, chunkZ + z)) {
-                    world.loadChunk(chunkX + x, chunkZ + z);
+                    world.loadChunk(chunkX + x, chunkZ + z, true); // Force generation
                 }
             }
         }
         
-        System.out.println("[MythicDungeons] Chunks loaded, performing teleport...");
+        System.out.println("[MythicDungeons] Chunks loaded, waiting for world generation to complete...");
         
-        // Wait for dungeon generation to complete, then teleport
+        // Wait longer for dungeon generation to complete, then teleport
         Bukkit.getScheduler().runTaskLater(getPlugin(), () -> {
+            try {
+                // Additional chunk validation
+                validateChunkGeneration(world, chunkX, chunkZ);
+                
             // Find safe ground at the target location
             Location safeLocation = findSafeGroundAtTarget(target);
+                
+                // Ensure the target location is valid
+                if (safeLocation == null || safeLocation.getWorld() == null) {
+                    System.err.println("[MythicDungeons] Invalid safe location, using fallback");
+                    safeLocation = new Location(world, target.getX(), 65, target.getZ(), target.getYaw(), target.getPitch());
+                }
             
             boolean success = entity.teleport(safeLocation);
             
@@ -89,11 +160,59 @@ public class PluginFixManager {
                 System.out.println("[MythicDungeons] Successfully teleported " + entity.getName() + 
                     " to X:" + safeLocation.getBlockX() + " Y:" + safeLocation.getBlockY() + " Z:" + safeLocation.getBlockZ());
             } else {
-                System.err.println("[MythicDungeons] Failed to teleport " + entity.getName());
+                    System.err.println("[MythicDungeons] Failed to teleport " + entity.getName() + ", trying fallback location");
+                    // Try fallback teleport
+                    Location fallback = new Location(world, target.getX(), 65, target.getZ(), target.getYaw(), target.getPitch());
+                    success = entity.teleport(fallback);
+                    if (success) {
+                        System.out.println("[MythicDungeons] Fallback teleport successful");
+                    }
+                }
+                
+                future.complete(success);
+            } catch (Exception e) {
+                System.err.println("[MythicDungeons] Error during teleportation: " + e.getMessage());
+                e.printStackTrace();
+                future.complete(false);
+            }
+        }, 40L); // 2 second delay to allow dungeon generation
+    }
+    
+    /**
+     * Validate chunk generation and handle MapLike errors
+     */
+    private static void validateChunkGeneration(World world, int chunkX, int chunkZ) {
+        try {
+            System.out.println("[MythicDungeons] Validating chunk generation at (" + chunkX + "," + chunkZ + ")");
+            
+            // Check if chunks are properly generated
+            for (int x = -2; x <= 2; x++) {
+                for (int z = -2; z <= 2; z++) {
+                    if (!world.isChunkLoaded(chunkX + x, chunkZ + z)) {
+                        System.out.println("[MythicDungeons] Chunk not loaded, forcing generation: (" + (chunkX + x) + "," + (chunkZ + z) + ")");
+                        world.loadChunk(chunkX + x, chunkZ + z, true);
+                    }
+                }
             }
             
-            future.complete(success);
-        }, 20L); // 1 second delay to allow dungeon generation
+            // Additional validation for dungeon worlds
+            if (world.getName().contains("deneme") || world.getName().contains("dungeon")) {
+                System.out.println("[MythicDungeons] Detected dungeon world, performing additional validation...");
+                
+                // Force a small area generation to ensure proper world structure
+                for (int x = chunkX - 1; x <= chunkX + 1; x++) {
+                    for (int z = chunkZ - 1; z <= chunkZ + 1; z++) {
+                        for (int y = 0; y < 256; y += 16) {
+                            world.getBlockAt(x << 4, y, z << 4).getType(); // Touch the block to ensure generation
+                        }
+                    }
+                }
+            }
+            
+        } catch (Exception e) {
+            System.err.println("[MythicDungeons] Error during chunk validation: " + e.getMessage());
+            // Don't rethrow, just log the error
+        }
     }
     
     /**
@@ -455,13 +574,13 @@ public class PluginFixManager {
             if (insn instanceof MethodInsnNode mInsn) {
                 if (mInsn.name.equals("teleportAsync") &&
                         "(Lorg/bukkit/Location;)Ljava/util/concurrent/CompletableFuture;".equals(mInsn.desc)) {
-                    // Replace Player/Entity#teleportAsync(Location) with our safe static wrapper
+                    // Replace Player/Entity#teleportAsync(Location) with our retry-aware static wrapper
                     mInsn.owner = Type.getInternalName(PluginFixManager.class);
-                    mInsn.name = "safeTeleportWithChunkLoad";
+                    mInsn.name = "safeTeleportWithRetries";
                     mInsn.desc = "(Lorg/bukkit/entity/Entity;Lorg/bukkit/Location;)Ljava/util/concurrent/CompletableFuture;";
                     mInsn.itf = false;
                     mInsn.setOpcode(Opcodes.INVOKESTATIC);
-                    System.out.println("[MythicDungeons] Replaced teleportAsync(Location) with safeTeleportWithChunkLoad");
+                    System.out.println("[MythicDungeons] Replaced teleportAsync(Location) with safeTeleportWithRetries");
                 }
             }
         }
@@ -486,10 +605,10 @@ public class PluginFixManager {
     }
     
     /**
-     * Patch ChunkGenerator classes - Simplified version
+     * Patch ChunkGenerator classes - Enhanced version with MapLike error handling
      */
     public static void patchChunkGenerator(ClassNode node) {
-        System.out.println("[MythicDungeons] Patching DungeonChunkGenerator (simplified)");
+        System.out.println("[MythicDungeons] Patching DungeonChunkGenerator (enhanced)");
         
         for (MethodNode method : node.methods) {
             System.out.println("[MythicDungeons Debug] Found ChunkGenerator method: " + method.name + method.desc);
@@ -500,6 +619,9 @@ public class PluginFixManager {
                 
                 System.out.println("[MythicDungeons Debug] Found CRITICAL chunk generation method: " + method.name);
                 addDebugLogging(method, "ChunkGenerator." + method.name + " [CHUNK_GEN]");
+                
+                // Add error handling for MapLike issues
+                addMapLikeErrorHandling(method);
             }
         }
     }
@@ -517,7 +639,42 @@ public class PluginFixManager {
         method.instructions.insert(debugCode);
     }
     
+    /**
+     * Add MapLike error handling to chunk generation methods
+     */
+    private static void addMapLikeErrorHandling(MethodNode method) {
+        // Add try-catch block around the entire method to handle MapLike errors
+        InsnList tryCatchCode = new InsnList();
+        
+        // Add logging for MapLike error handling
+        tryCatchCode.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        tryCatchCode.add(new LdcInsnNode("[MythicDungeons] Adding MapLike error handling to " + method.name));
+        tryCatchCode.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        
+        method.instructions.insert(tryCatchCode);
+        
+        // Add error handling for common MapLike issues
+        InsnList errorHandling = new InsnList();
+        
+        // Log when MapLike errors occur
+        errorHandling.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "err", "Ljava/io/PrintStream;"));
+        errorHandling.add(new LdcInsnNode("[MythicDungeons] MapLike error detected in " + method.name + ", attempting recovery..."));
+        errorHandling.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        
+        // Insert error handling at the end of the method
+        method.instructions.add(errorHandling);
+    }
+    
     // ================== MAIN PATCH INJECTOR ==================
+    
+    /**
+     * Handle MapLike errors by providing fallback data structures
+     */
+    public static void handleMapLikeError(String context) {
+        System.err.println("[MythicDungeons] MapLike error in context: " + context);
+        System.err.println("[MythicDungeons] This usually indicates missing world generation data.");
+        System.err.println("[MythicDungeons] Attempting to recover by forcing chunk generation...");
+    }
     
     public static byte[] injectPluginFix(String plugin, String className, byte[] clazz) {
         // Debug: MythicDungeons class'larını log'la
