@@ -79,25 +79,44 @@ public class PluginFixManager {
                 if (result.isDone()) return;
                 state.attempts++;
 
-                Location apiSpawn = getSpawnLocationFromMythicDungeons(target.getWorld());
-                if (apiSpawn != null) {
-                    System.out.println("[MythicDungeons] Spawn available after attempts=" + state.attempts);
-                    safeTeleportWithChunkLoad(entity, apiSpawn).whenComplete((ok, err) -> {
-                        if (err != null) {
-                            result.complete(false);
-                        } else if (ok != null && ok) {
-                            result.complete(true);
-                        } else {
-                            result.complete(false);
-                        }
-                    });
-                    return;
+                try {
+                    Location apiSpawn = getSpawnLocationFromMythicDungeons(target.getWorld());
+                    if (apiSpawn != null) {
+                        System.out.println("[MythicDungeons] Spawn available after attempts=" + state.attempts);
+                        safeTeleportWithChunkLoad(entity, apiSpawn).whenComplete((ok, err) -> {
+                            if (err != null) {
+                                System.err.println("[MythicDungeons] API spawn teleport failed: " + err.getMessage());
+                                result.complete(false);
+                            } else if (ok != null && ok) {
+                                result.complete(true);
+                            } else {
+                                result.complete(false);
+                            }
+                        });
+                        return;
+                    }
+                } catch (Exception e) {
+                    System.err.println("[MythicDungeons] Error getting API spawn: " + e.getMessage());
+                    // Continue to fallback
                 }
 
                 if (state.attempts >= maxAttempts) {
-                    System.out.println("[MythicDungeons] Spawn not ready, using fallback target");
-                    safeTeleportWithChunkLoad(entity, target).whenComplete((ok, err) -> {
-                        if (err != null) result.complete(false); else result.complete(ok != null && ok);
+                    System.out.println("[MythicDungeons] Spawn not ready after " + maxAttempts + " attempts, using fallback target");
+                    
+                    // Try to find a better fallback location
+                    Location fallbackLocation = findSafeGroundAtTarget(target);
+                    if (fallbackLocation == null) {
+                        fallbackLocation = target;
+                    }
+                    
+                    System.out.println("[MythicDungeons] Using fallback location: " + fallbackLocation);
+                    safeTeleportWithChunkLoad(entity, fallbackLocation).whenComplete((ok, err) -> {
+                        if (err != null) {
+                            System.err.println("[MythicDungeons] Fallback teleport failed: " + err.getMessage());
+                            result.complete(false);
+                        } else {
+                            result.complete(ok != null && ok);
+                        }
                     });
                     return;
                 }
@@ -409,44 +428,69 @@ public class PluginFixManager {
 
     private static Object tryResolveDungeonManager() {
         try {
-            // 1) Via Bukkit plugin main class accessor methods
+            // 1) Via Bukkit plugin main class accessor methods (safe approach)
             Plugin mythic = Bukkit.getPluginManager().getPlugin("MythicDungeons");
             if (mythic != null) {
-                // Common accessors
+                // Common accessors - try without loading MythicBukkit
                 String[] accessors = {"getDungeonManager", "getManager", "getInstanceManager", "getInstances", "getDungeons"};
                 for (String accessor : accessors) {
                     try {
                         java.lang.reflect.Method m = mythic.getClass().getMethod(accessor);
                         Object res = m.invoke(mythic);
-                        if (res != null) return res;
-                    } catch (Exception ignore) {}
-                }
-            }
-        } catch (Exception ignore) {}
-        try {
-            // 2) Via service API
-            Class<?> svcClass = Class.forName("net.playavalon.mythicdungeons.api.MythicDungeonsService");
-            Object service = Bukkit.getServicesManager().load(svcClass);
-            if (service != null) return service;
-        } catch (Exception ignore) {}
-        try {
-            // 3) Via static singleton on main class
-            Class<?> main = Class.forName("net.playavalon.mythicdungeons.MythicDungeons");
-            try {
-                java.lang.reflect.Method get = main.getMethod("getInstance");
-                Object inst = get.invoke(null);
-                if (inst != null) {
-                    String[] accessors = {"getDungeonManager", "getManager", "getInstanceManager"};
-                    for (String accessor : accessors) {
-                        try {
-                            java.lang.reflect.Method m = inst.getClass().getMethod(accessor);
-                            Object res = m.invoke(inst);
-                            if (res != null) return res;
-                        } catch (Exception ignore) {}
+                        if (res != null) {
+                            System.out.println("[MythicDungeons] Found manager via plugin accessor: " + accessor);
+                            return res;
+                        }
+                    } catch (Exception e) {
+                        // Skip methods that might trigger MythicBukkit loading
+                        if (!e.getMessage().contains("MythicBukkit") && !e.getMessage().contains("mythic")) {
+                            // Only log non-MythicBukkit related errors
+                        }
                     }
                 }
-            } catch (Exception ignore) {}
-        } catch (Exception ignore) {}
+            }
+        } catch (Exception e) {
+            System.out.println("[MythicDungeons] Plugin accessor failed: " + e.getMessage());
+        }
+        
+        try {
+            // 2) Via service API (safer)
+            Class<?> svcClass = Class.forName("net.playavalon.mythicdungeons.api.MythicDungeonsService");
+            Object service = Bukkit.getServicesManager().load(svcClass);
+            if (service != null) {
+                System.out.println("[MythicDungeons] Found manager via service API");
+                return service;
+            }
+        } catch (Exception e) {
+            System.out.println("[MythicDungeons] Service API failed: " + e.getMessage());
+        }
+        
+        try {
+            // 3) Direct class access without getInstance (avoid MythicBukkit dependency)
+            Class<?> managerClass = Class.forName("net.playavalon.mythicdungeons.managers.DungeonManager");
+            // Try to find a static method that doesn't require MythicBukkit
+            java.lang.reflect.Method[] methods = managerClass.getDeclaredMethods();
+            for (java.lang.reflect.Method method : methods) {
+                if (method.getName().equals("getInstance") && java.lang.reflect.Modifier.isStatic(method.getModifiers())) {
+                    try {
+                        Object manager = method.invoke(null);
+                        if (manager != null) {
+                            System.out.println("[MythicDungeons] Found manager via direct class access");
+                            return manager;
+                        }
+                    } catch (Exception e) {
+                        // Skip if it triggers MythicBukkit loading
+                        if (!e.getMessage().contains("MythicBukkit")) {
+                            System.out.println("[MythicDungeons] Direct access failed: " + e.getMessage());
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("[MythicDungeons] Direct class access failed: " + e.getMessage());
+        }
+        
+        System.out.println("[MythicDungeons] Could not resolve dungeon manager, will use fallback teleportation");
         return null;
     }
     
