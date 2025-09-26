@@ -97,7 +97,7 @@ public class PluginFixManager {
     }
     
     /**
-     * Find safe ground at the target location using MythicDungeons DungeonChunkGenerator
+     * Find safe ground at the target location using MythicDungeons API
      */
     private static Location findSafeGroundAtTarget(Location target) {
         World world = target.getWorld();
@@ -107,153 +107,208 @@ public class PluginFixManager {
         
         System.out.println("[MythicDungeons] Finding safe ground at target X:" + x + " Z:" + z + " starting from Y:" + startY);
         
-        // First try to get actual dungeon room from ChunkGenerator
-        Location dungeonRoom = getDungeonRoomFromGenerator(world, x, z);
+        // First try to get spawn location from MythicDungeons API
+        Location apiSpawn = getSpawnLocationFromMythicDungeons(world);
+        if (apiSpawn != null) {
+            System.out.println("[MythicDungeons] Found spawn location from API at Y:" + apiSpawn.getBlockY());
+            return apiSpawn;
+        }
+        
+        // Try to find dungeon room at the target coordinates
+        Location dungeonRoom = findDungeonRoomAtCoordinates(world, x, z);
         if (dungeonRoom != null) {
-            System.out.println("[MythicDungeons] Found dungeon room from ChunkGenerator at Y:" + dungeonRoom.getBlockY());
+            System.out.println("[MythicDungeons] Found dungeon room at Y:" + dungeonRoom.getBlockY());
             return dungeonRoom;
         }
         
-        // First check if the original target is safe
-        if (isSafeGround(world, x, startY - 1, z)) {
-            System.out.println("[MythicDungeons] Original target is safe!");
-            return new Location(world, x + 0.5, startY, z + 0.5, target.getYaw(), target.getPitch());
-        }
-        
-        // Scan downward from target Y to find dungeon floor
-        for (int y = startY - 1; y >= 5; y--) {
-            if (isSafeGround(world, x, y, z)) {
-                System.out.println("[MythicDungeons] Found safe ground below at Y:" + (y + 1));
-                return new Location(world, x + 0.5, y + 1, z + 0.5, target.getYaw(), target.getPitch());
-            }
-        }
-        
-        // If no safe ground found directly below, scan in a small radius
-        System.out.println("[MythicDungeons] No safe ground directly below, scanning nearby...");
-        for (int dx = -3; dx <= 3; dx++) {
-            for (int dz = -3; dz <= 3; dz++) {
-                for (int y = Math.max(5, startY - 50); y <= startY + 10; y++) {
-                    if (isSafeGround(world, x + dx, y, z + dz)) {
-                        System.out.println("[MythicDungeons] Found safe ground nearby at X:" + (x + dx) + " Y:" + (y + 1) + " Z:" + (z + dz));
-                        return new Location(world, x + dx + 0.5, y + 1, z + dz + 0.5, target.getYaw(), target.getPitch());
-                    }
-                }
-            }
-        }
-        
-        // Last resort: create a platform at a reasonable height
-        System.out.println("[MythicDungeons] No safe ground found, creating platform at Y:70");
-        return createEmergencyPlatform(world, x, 70, z);
+        // If no dungeon room found, just teleport to a reasonable height
+        System.out.println("[MythicDungeons] No dungeon room found, using reasonable height Y:65");
+        return new Location(world, x + 0.5, 65, z + 0.5, target.getYaw(), target.getPitch());
     }
     
     /**
-     * Get actual dungeon room location from MythicDungeons DungeonChunkGenerator
+     * Get spawn location from MythicDungeons API using reflection
      */
-    private static Location getDungeonRoomFromGenerator(World world, int targetX, int targetZ) {
+    private static Location getSpawnLocationFromMythicDungeons(World world) {
         try {
-            org.bukkit.generator.ChunkGenerator gen = world.getGenerator();
-            if (gen != null && gen.getClass().getName().contains("DungeonChunkGenerator")) {
-                System.out.println("[MythicDungeons] Found DungeonChunkGenerator, getting room bounds...");
-                
-                // Get room bounds from ChunkGenerator
-                java.lang.reflect.Method getRoomBounds = gen.getClass().getMethod("getRoomBounds");
-                Object roomBoundsObj = getRoomBounds.invoke(gen);
-                
-                if (roomBoundsObj instanceof Map) {
-                    Map<?, ?> roomBounds = (Map<?, ?>) roomBoundsObj;
-                    System.out.println("[MythicDungeons] Found " + roomBounds.size() + " rooms in ChunkGenerator");
-                    
-                    // Find the closest room to target coordinates
-                    Object closestRoomKey = null;
-                    int bestDistance = Integer.MAX_VALUE;
-                    int targetChunkX = targetX >> 4;
-                    int targetChunkZ = targetZ >> 4;
-                    
-                    for (Object key : roomBounds.keySet()) {
-                        try {
-                            int chunkX, chunkZ;
-                            if (key.getClass().getName().contains("Vector2i")) {
-                                chunkX = (int) key.getClass().getMethod("x").invoke(key);
-                                chunkZ = (int) key.getClass().getMethod("y").invoke(key);
-                            } else {
-                                // Try field access as fallback
-                                chunkX = (int) key.getClass().getField("x").get(key);
-                                chunkZ = (int) key.getClass().getField("y").get(key);
-                            }
-                            
-                            int distance = Math.abs(chunkX - targetChunkX) + Math.abs(chunkZ - targetChunkZ);
-                            if (distance < bestDistance) {
-                                bestDistance = distance;
-                                closestRoomKey = key;
-                            }
-                            
-                            System.out.println("[MythicDungeons] Room at chunk (" + chunkX + "," + chunkZ + ") distance: " + distance);
-                        } catch (Exception e) {
-                            System.out.println("[MythicDungeons] Could not extract chunk coordinates from room key: " + e.getMessage());
-                        }
+            System.out.println("[MythicDungeons] Trying to get spawn location from MythicDungeons API...");
+            
+            // Try to get DungeonManager
+            Class<?> dungeonManagerClass = Class.forName("net.playavalon.mythicdungeons.managers.DungeonManager");
+            Object dungeonManager = dungeonManagerClass.getMethod("getInstance").invoke(null);
+            
+            // Try different methods to get dungeon instance
+            Object dungeonInstance = null;
+            String[] methodNames = {"getDungeonByWorld", "getDungeon", "getInstanceByWorld", "getByWorld"};
+            
+            for (String methodName : methodNames) {
+                try {
+                    java.lang.reflect.Method method = dungeonManagerClass.getMethod(methodName, String.class);
+                    dungeonInstance = method.invoke(dungeonManager, world.getName());
+                    if (dungeonInstance != null) {
+                        System.out.println("[MythicDungeons] Found dungeon instance using method: " + methodName);
+                        break;
                     }
-                    
-                    if (closestRoomKey != null) {
-                        int chunkX, chunkZ;
-                        try {
-                            if (closestRoomKey.getClass().getName().contains("Vector2i")) {
-                                chunkX = (int) closestRoomKey.getClass().getMethod("x").invoke(closestRoomKey);
-                                chunkZ = (int) closestRoomKey.getClass().getMethod("y").invoke(closestRoomKey);
-                            } else {
-                                chunkX = (int) closestRoomKey.getClass().getField("x").get(closestRoomKey);
-                                chunkZ = (int) closestRoomKey.getClass().getField("y").get(closestRoomKey);
-                            }
-                            
-                            // Convert chunk coordinates to world coordinates (center of chunk)
-                            int worldX = (chunkX << 4) + 8;
-                            int worldZ = (chunkZ << 4) + 8;
-                            
-                            System.out.println("[MythicDungeons] Using closest room at chunk (" + chunkX + "," + chunkZ + ") world (" + worldX + "," + worldZ + ")");
-                            
-                            // Find the Y level of the room floor
-                            for (int y = 5; y <= 250; y++) {
-                                org.bukkit.block.Block floor = world.getBlockAt(worldX, y, worldZ);
-                                org.bukkit.block.Block above1 = world.getBlockAt(worldX, y + 1, worldZ);
-                                org.bukkit.block.Block above2 = world.getBlockAt(worldX, y + 2, worldZ);
-                                
-                                // Look for solid floor with air above (typical room pattern)
-                                if (!floor.getType().isAir() && 
-                                    above1.getType().isAir() && 
-                                    above2.getType().isAir()) {
-                                    
-                                    System.out.println("[MythicDungeons] Found dungeon room floor at Y=" + y);
-                                    return new Location(world, worldX + 0.5, y + 1, worldZ + 0.5);
+                } catch (Exception e) {
+                    // Try next method
+                }
+            }
+            
+            if (dungeonInstance != null) {
+                // Try to get spawn location from dungeon instance
+                String[] spawnMethodNames = {"getSpawnLocation", "getStartLocation", "getLobbyLocation", "getEntranceLocation", "getPlayerSpawnLocation"};
+                
+                for (String methodName : spawnMethodNames) {
+                    try {
+                        java.lang.reflect.Method method = dungeonInstance.getClass().getMethod(methodName);
+                        Object spawnLocation = method.invoke(dungeonInstance);
+                        if (spawnLocation instanceof Location) {
+                            System.out.println("[MythicDungeons] Found spawn location using method: " + methodName);
+                            return (Location) spawnLocation;
+                        }
+                    } catch (Exception e) {
+                        // Try next method
+                    }
+                }
+                
+                // If it's an InstancePlayable, try to get playable and then spawn
+                try {
+                    java.lang.reflect.Method getPlayable = dungeonInstance.getClass().getMethod("getPlayable");
+                    Object playable = getPlayable.invoke(dungeonInstance);
+                    if (playable != null) {
+                        System.out.println("[MythicDungeons] Found playable instance, trying to get spawn...");
+                        
+                        // Try different spawn methods on playable
+                        String[] playableSpawnMethods = {"getSpawnLocation", "getStartLocation", "getCenterLocation", "getPlayerSpawnLocation"};
+                        
+                        for (String methodName : playableSpawnMethods) {
+                            try {
+                                java.lang.reflect.Method method = playable.getClass().getMethod(methodName);
+                                Object spawnLocation = method.invoke(playable);
+                                if (spawnLocation instanceof Location) {
+                                    System.out.println("[MythicDungeons] Found playable spawn location using method: " + methodName);
+                                    return (Location) spawnLocation;
                                 }
+                            } catch (Exception e) {
+                                // Try next method
                             }
-                            
-                            // If no floor found, try scanning a bit around the center
-                            for (int dx = -2; dx <= 2; dx++) {
-                                for (int dz = -2; dz <= 2; dz++) {
-                                    for (int y = 5; y <= 250; y++) {
-                                        org.bukkit.block.Block floor = world.getBlockAt(worldX + dx, y, worldZ + dz);
-                                        org.bukkit.block.Block above1 = world.getBlockAt(worldX + dx, y + 1, worldZ + dz);
-                                        org.bukkit.block.Block above2 = world.getBlockAt(worldX + dx, y + 2, worldZ + dz);
-                                        
-                                        if (!floor.getType().isAir() && 
-                                            above1.getType().isAir() && 
-                                            above2.getType().isAir()) {
+                        }
+                        
+                        // Try to get layout and then start room
+                        try {
+                            java.lang.reflect.Method getLayout = playable.getClass().getMethod("getLayout");
+                            Object layout = getLayout.invoke(playable);
+                            if (layout != null) {
+                                System.out.println("[MythicDungeons] Found layout, trying to get start room...");
+                                
+                                String[] startRoomMethods = {"getStartRoom", "getRootRoom", "getSpawnRoom", "getFirstRoom"};
+                                
+                                for (String methodName : startRoomMethods) {
+                                    try {
+                                        java.lang.reflect.Method method = layout.getClass().getMethod(methodName);
+                                        Object startRoom = method.invoke(layout);
+                                        if (startRoom != null) {
+                                            System.out.println("[MythicDungeons] Found start room using method: " + methodName);
                                             
-                                            System.out.println("[MythicDungeons] Found dungeon room floor at Y=" + y + " with offset (" + dx + "," + dz + ")");
-                                            return new Location(world, worldX + dx + 0.5, y + 1, worldZ + dz + 0.5);
+                                            // Try to get location from start room
+                                            String[] roomLocationMethods = {"getCenter", "getCenterLocation", "getLocation", "getSpawnLocation"};
+                                            
+                                            for (String locMethodName : roomLocationMethods) {
+                                                try {
+                                                    java.lang.reflect.Method locMethod = startRoom.getClass().getMethod(locMethodName);
+                                                    Object location = locMethod.invoke(startRoom);
+                                                    if (location instanceof Location) {
+                                                        System.out.println("[MythicDungeons] Found room location using method: " + locMethodName);
+                                                        return (Location) location;
+                                                    }
+                                                } catch (Exception e) {
+                                                    // Try next method
+                                                }
+                                            }
                                         }
+                                    } catch (Exception e) {
+                                        // Try next method
                                     }
                                 }
                             }
                         } catch (Exception e) {
-                            System.out.println("[MythicDungeons] Could not extract coordinates from closest room: " + e.getMessage());
+                            System.out.println("[MythicDungeons] Could not get layout: " + e.getMessage());
+                        }
+                    }
+                } catch (Exception e) {
+                    System.out.println("[MythicDungeons] Could not get playable: " + e.getMessage());
+                }
+            }
+            
+        } catch (Exception e) {
+            System.out.println("[MythicDungeons] Could not get spawn location from API: " + e.getMessage());
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Find dungeon room at specific coordinates by scanning downward
+     */
+    private static Location findDungeonRoomAtCoordinates(World world, int x, int z) {
+        System.out.println("[MythicDungeons] Scanning for dungeon room at X:" + x + " Z:" + z);
+        
+        // Scan from Y=128 down to Y=5 to find dungeon floor
+        for (int y = 128; y >= 5; y--) {
+            org.bukkit.block.Block floor = world.getBlockAt(x, y, z);
+            org.bukkit.block.Block above1 = world.getBlockAt(x, y + 1, z);
+            org.bukkit.block.Block above2 = world.getBlockAt(x, y + 2, z);
+            
+            // Look for solid floor with air above (typical room pattern)
+            if (!floor.getType().isAir() && 
+                above1.getType().isAir() && 
+                above2.getType().isAir()) {
+                
+                System.out.println("[MythicDungeons] Found potential room floor at Y=" + y);
+                
+                // Check if it looks like a dungeon room (has some space)
+                int airCount = 0;
+                for (int dx = -2; dx <= 2; dx++) {
+                    for (int dz = -2; dz <= 2; dz++) {
+                        for (int dy = 1; dy <= 3; dy++) {
+                            if (world.getBlockAt(x + dx, y + dy, z + dz).getType().isAir()) {
+                                airCount++;
+                            }
                         }
                     }
                 }
+                
+                // If we found enough air space, it's likely a room
+                if (airCount >= 20) {
+                    System.out.println("[MythicDungeons] Confirmed dungeon room at Y=" + (y + 1) + " with " + airCount + " air blocks");
+                    return new Location(world, x + 0.5, y + 1, z + 0.5);
+                }
             }
-        } catch (Exception e) {
-            System.out.println("[MythicDungeons] Could not get room from ChunkGenerator: " + e.getMessage());
         }
         
+        // If no room found at exact coordinates, try nearby
+        System.out.println("[MythicDungeons] No room found at exact coordinates, scanning nearby...");
+        for (int dx = -5; dx <= 5; dx++) {
+            for (int dz = -5; dz <= 5; dz++) {
+                if (dx == 0 && dz == 0) continue; // Skip center, already checked
+                
+                for (int y = 128; y >= 5; y--) {
+                    org.bukkit.block.Block floor = world.getBlockAt(x + dx, y, z + dz);
+                    org.bukkit.block.Block above1 = world.getBlockAt(x + dx, y + 1, z + dz);
+                    org.bukkit.block.Block above2 = world.getBlockAt(x + dx, y + 2, z + dz);
+                    
+                    if (!floor.getType().isAir() && 
+                        above1.getType().isAir() && 
+                        above2.getType().isAir()) {
+                        
+                        System.out.println("[MythicDungeons] Found nearby room at X:" + (x + dx) + " Y:" + (y + 1) + " Z:" + (z + dz));
+                        return new Location(world, x + dx + 0.5, y + 1, z + dz + 0.5);
+                    }
+                }
+            }
+        }
+        
+        System.out.println("[MythicDungeons] No dungeon room found in scan area");
         return null;
     }
     
