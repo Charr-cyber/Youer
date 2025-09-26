@@ -315,40 +315,51 @@ public class PluginFixManager {
             Object dungeonManager = tryResolveDungeonManager();
             Class<?> dungeonManagerClass = dungeonManager != null ? dungeonManager.getClass() : null;
             
-            // Try different methods to get dungeon instance
+            // Try to get dungeon instance using the correct API chain
             Object dungeonInstance = null;
-            String[] methodNames = {"getDungeonByWorld", "getDungeon", "getInstanceByWorld", "getByWorld"};
             
-            for (String methodName : methodNames) {
+            if (dungeonManager != null) {
+                // Try getInstanceByWorld(World) - This is the correct method for procedural dungeons
                 try {
-                    // Try World parameter first
-                    if (dungeonManagerClass != null) {
-                        java.lang.reflect.Method methodWorld = null;
-                        try { methodWorld = dungeonManagerClass.getMethod(methodName, World.class); } catch (Exception ignore) {}
-                        if (methodWorld != null) {
-                            dungeonInstance = methodWorld.invoke(dungeonManager, world);
-                            if (dungeonInstance != null) {
-                                System.out.println("[MythicDungeons] Found dungeon instance using method(World): " + methodName);
-                                break;
-                            }
-                        }
-                        // Then String world name
-                        java.lang.reflect.Method methodStr = null;
-                        try { methodStr = dungeonManagerClass.getMethod(methodName, String.class); } catch (Exception ignore) {}
-                        if (methodStr != null) {
-                            dungeonInstance = methodStr.invoke(dungeonManager, world.getName());
-                            if (dungeonInstance != null) {
-                                System.out.println("[MythicDungeons] Found dungeon instance using method(String): " + methodName);
-                                break;
-                            }
-                        }
-                    }
+                    java.lang.reflect.Method getInstanceByWorldMethod = dungeonManager.getClass().getMethod("getInstanceByWorld", World.class);
+                    dungeonInstance = getInstanceByWorldMethod.invoke(dungeonManager, world);
                     if (dungeonInstance != null) {
-                        System.out.println("[MythicDungeons] Found dungeon instance using method: " + methodName);
-                        break;
+                        System.out.println("[MythicDungeons] Found dungeon instance using getInstanceByWorld(World)");
                     }
                 } catch (Exception e) {
-                    // Try next method
+                    System.out.println("[MythicDungeons] getInstanceByWorld(World) failed: " + e.getMessage());
+                }
+                
+                // Fallback: Try other common method names
+                if (dungeonInstance == null) {
+                    String[] methodNames = {"getDungeonByWorld", "getDungeon", "getByWorld", "getInstance"};
+                    
+                    for (String methodName : methodNames) {
+                        try {
+                            // Try World parameter first
+                            java.lang.reflect.Method methodWorld = null;
+                            try { methodWorld = dungeonManager.getClass().getMethod(methodName, World.class); } catch (Exception ignore) {}
+                            if (methodWorld != null) {
+                                dungeonInstance = methodWorld.invoke(dungeonManager, world);
+                                if (dungeonInstance != null) {
+                                    System.out.println("[MythicDungeons] Found dungeon instance using method(World): " + methodName);
+                                    break;
+                                }
+                            }
+                            // Then String world name
+                            java.lang.reflect.Method methodStr = null;
+                            try { methodStr = dungeonManager.getClass().getMethod(methodName, String.class); } catch (Exception ignore) {}
+                            if (methodStr != null) {
+                                dungeonInstance = methodStr.invoke(dungeonManager, world.getName());
+                                if (dungeonInstance != null) {
+                                    System.out.println("[MythicDungeons] Found dungeon instance using method(String): " + methodName);
+                                    break;
+                                }
+                            }
+                        } catch (Exception e) {
+                            // Try next method
+                        }
+                    }
                 }
             }
             
@@ -369,6 +380,49 @@ public class PluginFixManager {
                     } catch (Exception e) {
                         // Try next method
                     }
+                }
+                
+                // Try direct layout access from dungeon instance (PROCEDURAL DUNGEON KEY PATH)
+                try {
+                    java.lang.reflect.Method getLayout = dungeonInstance.getClass().getMethod("getLayout");
+                    Object layout = getLayout.invoke(dungeonInstance);
+                    if (layout != null) {
+                        System.out.println("[MythicDungeons] Found layout directly from instance: " + layout.getClass().getSimpleName());
+                        
+                        // Try to get start room from layout
+                        String[] startRoomMethods = {"getStartRoom", "getRootRoom", "getSpawnRoom", "getFirstRoom"};
+                        
+                        for (String methodName : startRoomMethods) {
+                            try {
+                                java.lang.reflect.Method method = layout.getClass().getMethod(methodName);
+                                Object startRoom = method.invoke(layout);
+                                if (startRoom != null) {
+                                    System.out.println("[MythicDungeons] Found start room using method: " + methodName);
+                                    
+                                    // Try to get center location from start room (this is the key for procedural dungeons)
+                                    String[] roomLocationMethods = {"getCenterLocation", "getCenter", "getLocation", "getSpawnLocation"};
+                                    
+                                    for (String locMethodName : roomLocationMethods) {
+                                        try {
+                                            java.lang.reflect.Method locMethod = startRoom.getClass().getMethod(locMethodName);
+                                            Object location = locMethod.invoke(startRoom);
+                                            if (location instanceof Location) {
+                                                System.out.println("[MythicDungeons] Found room center location using method: " + locMethodName);
+                                                System.out.println("[MythicDungeons] PROCEDURAL DUNGEON SPAWN: " + ((Location) location).getBlockX() + ", " + ((Location) location).getBlockY() + ", " + ((Location) location).getBlockZ());
+                                                return (Location) location;
+                                            }
+                                        } catch (Exception e) {
+                                            // Try next method
+                                        }
+                                    }
+                                }
+                            } catch (Exception e) {
+                                // Try next method
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    System.out.println("[MythicDungeons] Could not get layout directly from instance: " + e.getMessage());
                 }
                 
                 // If it's an InstancePlayable, try to get playable and then spawn
@@ -399,8 +453,9 @@ public class PluginFixManager {
                             java.lang.reflect.Method getLayout = playable.getClass().getMethod("getLayout");
                             Object layout = getLayout.invoke(playable);
                             if (layout != null) {
-                                System.out.println("[MythicDungeons] Found layout: " + layout.getClass().getSimpleName());
+                                System.out.println("[MythicDungeons] Found layout from playable: " + layout.getClass().getSimpleName());
                                 
+                                // Try to get start room from layout
                                 String[] startRoomMethods = {"getStartRoom", "getRootRoom", "getSpawnRoom", "getFirstRoom"};
                                 
                                 for (String methodName : startRoomMethods) {
@@ -410,15 +465,16 @@ public class PluginFixManager {
                                         if (startRoom != null) {
                                             System.out.println("[MythicDungeons] Found start room using method: " + methodName);
                                             
-                                            // Try to get location from start room
-                                            String[] roomLocationMethods = {"getCenter", "getCenterLocation", "getLocation", "getSpawnLocation"};
+                                            // Try to get center location from start room (this is the key for procedural dungeons)
+                                            String[] roomLocationMethods = {"getCenterLocation", "getCenter", "getLocation", "getSpawnLocation"};
                                             
                                             for (String locMethodName : roomLocationMethods) {
                                                 try {
                                                     java.lang.reflect.Method locMethod = startRoom.getClass().getMethod(locMethodName);
                                                     Object location = locMethod.invoke(startRoom);
                                                     if (location instanceof Location) {
-                                                        System.out.println("[MythicDungeons] Found room location using method: " + locMethodName);
+                                                        System.out.println("[MythicDungeons] Found room center location using method: " + locMethodName);
+                                                        System.out.println("[MythicDungeons] PROCEDURAL DUNGEON SPAWN: " + ((Location) location).getBlockX() + ", " + ((Location) location).getBlockY() + ", " + ((Location) location).getBlockZ());
                                                         return (Location) location;
                                                     }
                                                 } catch (Exception e) {
@@ -432,7 +488,7 @@ public class PluginFixManager {
                                 }
                             }
                         } catch (Exception e) {
-                            System.out.println("[MythicDungeons] Could not get layout: " + e.getMessage());
+                            System.out.println("[MythicDungeons] Could not get layout from playable: " + e.getMessage());
                         }
                     }
                 } catch (Exception e) {
@@ -449,29 +505,60 @@ public class PluginFixManager {
 
     private static Object tryResolveDungeonManager() {
         try {
-            // Try to get DungeonManager via Bukkit services
-            Class<?> dungeonManagerClass = Class.forName("net.playavalon.mythicdungeons.managers.DungeonManager");
+            System.out.println("[MythicDungeons] Attempting to resolve DungeonManager...");
             
-            // Try to find a static getInstance method
-            java.lang.reflect.Method[] methods = dungeonManagerClass.getDeclaredMethods();
-            for (java.lang.reflect.Method method : methods) {
-                if (method.getName().equals("getInstance") && 
-                    java.lang.reflect.Modifier.isStatic(method.getModifiers()) &&
-                    method.getParameterCount() == 0) {
-                    try {
-                        Object manager = method.invoke(null);
-                        if (manager != null) {
-                            System.out.println("[MythicDungeons] Found DungeonManager via getInstance()");
-                            return manager;
-                        }
-                    } catch (Exception e) {
-                        System.out.println("[MythicDungeons] getInstance() failed: " + e.getMessage());
+            // Method 1: Try MythicDungeons.inst().getDungeonManager() - This is the correct API
+            try {
+                Class<?> mythicDungeonsClass = Class.forName("net.playavalon.mythicdungeons.MythicDungeons");
+                
+                // Look for static inst() method
+                java.lang.reflect.Method instMethod = mythicDungeonsClass.getMethod("inst");
+                Object mythicDungeonsInstance = instMethod.invoke(null);
+                
+                if (mythicDungeonsInstance != null) {
+                    System.out.println("[MythicDungeons] Found MythicDungeons instance via inst()");
+                    
+                    // Try to get getDungeonManager() method
+                    java.lang.reflect.Method getDungeonManagerMethod = mythicDungeonsInstance.getClass().getMethod("getDungeonManager");
+                    Object dungeonManager = getDungeonManagerMethod.invoke(mythicDungeonsInstance);
+                    
+                    if (dungeonManager != null) {
+                        System.out.println("[MythicDungeons] Found DungeonManager via MythicDungeons.inst().getDungeonManager()");
+                        return dungeonManager;
                     }
                 }
+            } catch (Exception e) {
+                System.out.println("[MythicDungeons] MythicDungeons.inst().getDungeonManager() failed: " + e.getMessage());
             }
             
-            // Try to get via Bukkit services
+            // Method 2: Try direct DungeonManager static access
             try {
+                Class<?> dungeonManagerClass = Class.forName("net.playavalon.mythicdungeons.managers.DungeonManager");
+                
+                // Try to find a static getInstance method
+                java.lang.reflect.Method[] methods = dungeonManagerClass.getDeclaredMethods();
+                for (java.lang.reflect.Method method : methods) {
+                    if (method.getName().equals("getInstance") && 
+                        java.lang.reflect.Modifier.isStatic(method.getModifiers()) &&
+                        method.getParameterCount() == 0) {
+                        try {
+                            Object manager = method.invoke(null);
+                            if (manager != null) {
+                                System.out.println("[MythicDungeons] Found DungeonManager via static getInstance()");
+                                return manager;
+                            }
+                        } catch (Exception e) {
+                            System.out.println("[MythicDungeons] static getInstance() failed: " + e.getMessage());
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                System.out.println("[MythicDungeons] Direct DungeonManager access failed: " + e.getMessage());
+            }
+            
+            // Method 3: Try via Bukkit services
+            try {
+                Class<?> dungeonManagerClass = Class.forName("net.playavalon.mythicdungeons.managers.DungeonManager");
                 Object service = Bukkit.getServicesManager().load(dungeonManagerClass);
                 if (service != null) {
                     System.out.println("[MythicDungeons] Found DungeonManager via Bukkit services");
