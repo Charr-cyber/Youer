@@ -252,11 +252,30 @@ public class PluginFixManager {
             return apiSpawn;
         }
         
+        // For procedural dungeons, the target Y=128 is usually wrong, so we need to find the actual dungeon
         // Try to find dungeon room at the target coordinates
         Location dungeonRoom = findDungeonRoomAtCoordinates(world, x, z);
         if (dungeonRoom != null) {
             System.out.println("[MythicDungeons] Found dungeon room at Y:" + dungeonRoom.getBlockY());
             return dungeonRoom;
+        }
+        
+        // If target Y is 128 (which is usually wrong for dungeons), try to find dungeon at reasonable heights
+        if (startY >= 120) {
+            System.out.println("[MythicDungeons] Target Y=" + startY + " seems too high for dungeon, searching at reasonable heights...");
+            
+            // Search for dungeon rooms in a wider area at reasonable heights
+            for (int searchY = 80; searchY >= 10; searchY -= 5) {
+                for (int searchX = x - 10; searchX <= x + 10; searchX += 2) {
+                    for (int searchZ = z - 10; searchZ <= z + 10; searchZ += 2) {
+                        Location room = findDungeonRoomAtCoordinates(world, searchX, searchZ);
+                        if (room != null) {
+                            System.out.println("[MythicDungeons] Found dungeon room at X:" + searchX + " Y:" + room.getBlockY() + " Z:" + searchZ);
+                            return room;
+                        }
+                    }
+                }
+            }
         }
         
         // If no dungeon room found, try to find any solid ground at reasonable height
@@ -427,70 +446,9 @@ public class PluginFixManager {
     }
 
     private static Object tryResolveDungeonManager() {
-        try {
-            // 1) Via Bukkit plugin main class accessor methods (safe approach)
-            Plugin mythic = Bukkit.getPluginManager().getPlugin("MythicDungeons");
-            if (mythic != null) {
-                // Common accessors - try without loading MythicBukkit
-                String[] accessors = {"getDungeonManager", "getManager", "getInstanceManager", "getInstances", "getDungeons"};
-                for (String accessor : accessors) {
-                    try {
-                        java.lang.reflect.Method m = mythic.getClass().getMethod(accessor);
-                        Object res = m.invoke(mythic);
-                        if (res != null) {
-                            System.out.println("[MythicDungeons] Found manager via plugin accessor: " + accessor);
-                            return res;
-                        }
-                    } catch (Exception e) {
-                        // Skip methods that might trigger MythicBukkit loading
-                        if (!e.getMessage().contains("MythicBukkit") && !e.getMessage().contains("mythic")) {
-                            // Only log non-MythicBukkit related errors
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            System.out.println("[MythicDungeons] Plugin accessor failed: " + e.getMessage());
-        }
-        
-        try {
-            // 2) Via service API (safer)
-            Class<?> svcClass = Class.forName("net.playavalon.mythicdungeons.api.MythicDungeonsService");
-            Object service = Bukkit.getServicesManager().load(svcClass);
-            if (service != null) {
-                System.out.println("[MythicDungeons] Found manager via service API");
-                return service;
-            }
-        } catch (Exception e) {
-            System.out.println("[MythicDungeons] Service API failed: " + e.getMessage());
-        }
-        
-        try {
-            // 3) Direct class access without getInstance (avoid MythicBukkit dependency)
-            Class<?> managerClass = Class.forName("net.playavalon.mythicdungeons.managers.DungeonManager");
-            // Try to find a static method that doesn't require MythicBukkit
-            java.lang.reflect.Method[] methods = managerClass.getDeclaredMethods();
-            for (java.lang.reflect.Method method : methods) {
-                if (method.getName().equals("getInstance") && java.lang.reflect.Modifier.isStatic(method.getModifiers())) {
-                    try {
-                        Object manager = method.invoke(null);
-                        if (manager != null) {
-                            System.out.println("[MythicDungeons] Found manager via direct class access");
-                            return manager;
-                        }
-                    } catch (Exception e) {
-                        // Skip if it triggers MythicBukkit loading
-                        if (!e.getMessage().contains("MythicBukkit")) {
-                            System.out.println("[MythicDungeons] Direct access failed: " + e.getMessage());
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            System.out.println("[MythicDungeons] Direct class access failed: " + e.getMessage());
-        }
-        
-        System.out.println("[MythicDungeons] Could not resolve dungeon manager, will use fallback teleportation");
+        // Skip all reflection attempts that might trigger MythicBukkit loading
+        // MythicDungeons has soft dependency on MythicMobs, so we'll use fallback approach
+        System.out.println("[MythicDungeons] Skipping manager resolution to avoid MythicBukkit dependency");
         return null;
     }
     
@@ -531,7 +489,8 @@ public class PluginFixManager {
                 }
                 
                 // If we found enough air space and some solid walls, it's likely a room
-                if (airCount >= 30 && solidCount >= 10) {
+                // Relaxed criteria for better room detection
+                if (airCount >= 20 && solidCount >= 5) {
                     System.out.println("[MythicDungeons] Confirmed dungeon room at Y=" + (y + 1) + " with " + airCount + " air blocks, " + solidCount + " solid blocks");
                     return new Location(world, x + 0.5, y + 1, z + 0.5);
                 }
@@ -565,7 +524,7 @@ public class PluginFixManager {
                             }
                         }
                         
-                        if (nearbyAirCount >= 15) {
+                        if (nearbyAirCount >= 10) {
                             System.out.println("[MythicDungeons] Found nearby room at X:" + (x + dx) + " Y:" + (y + 1) + " Z:" + (z + dz) + " with " + nearbyAirCount + " air blocks");
                             return new Location(world, x + dx + 0.5, y + 1, z + dz + 0.5);
                         }
