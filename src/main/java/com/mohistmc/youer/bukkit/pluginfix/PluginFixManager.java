@@ -847,7 +847,7 @@ public class PluginFixManager {
             ClassNode node = new ClassNode();
             new ClassReader(basicClass).accept(node, 0);
             handler.accept(node);
-            ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+            ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
             node.accept(writer);
             return writer.toByteArray();
         } catch (Exception e) {
