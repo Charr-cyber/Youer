@@ -1,189 +1,113 @@
-package com.mythicdungeons.fix;
+package com.mohistmc.youer.bukkit.pluginfix;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.World;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
-import org.bukkit.event.EventHandler;
-import org.bukkit.event.EventPriority;
-import org.bukkit.event.Listener;
-import org.bukkit.event.player.PlayerChangedWorldEvent;
-import org.bukkit.event.player.PlayerCommandPreprocessEvent;
-import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.plugin.Plugin;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.util.HashMap;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class MythicDungeonsFix extends JavaPlugin implements Listener {
+/**
+ * MythicDungeons Procedural Dungeon Teleportation Fix
+ * Simplified version for Youer
+ */
+public class MythicDungeonsFix {
     
-    private final Map<UUID, String> pendingTeleports = new ConcurrentHashMap<>();
-    private final Map<String, Location> dungeonSpawns = new ConcurrentHashMap<>();
+    private static final Map<String, Location> dungeonSpawns = new ConcurrentHashMap<>();
     
-    @Override
-    public void onEnable() {
-        Bukkit.getPluginManager().registerEvents(this, this);
-        getLogger().info("MythicDungeonsFix enabled - Fixing procedural dungeon teleports");
+    /**
+     * Fix teleport for procedural dungeons
+     */
+    public static void fixProceduralTeleport(Player player, String dungeonName) {
+        if (player == null || dungeonName == null) return;
         
-        // Check for MythicDungeons
-        if (Bukkit.getPluginManager().getPlugin("MythicDungeons") == null) {
-            getLogger().warning("MythicDungeons not found! This fix requires MythicDungeons.");
-        }
-    }
-    
-    @EventHandler(priority = EventPriority.HIGHEST)
-    public void onCommand(PlayerCommandPreprocessEvent event) {
-        String cmd = event.getMessage().toLowerCase();
+        System.out.println("[MythicDungeonsFix] Fixing teleport for " + player.getName() + " to dungeon: " + dungeonName);
         
-        // Intercept /md play command
-        if (cmd.startsWith("/md play ") || cmd.startsWith("/mythicdungeons:md play ")) {
-            Player player = event.getPlayer();
-            String[] parts = cmd.split(" ");
-            
-            if (parts.length >= 3) {
-                String dungeonName = parts[2];
-                pendingTeleports.put(player.getUniqueId(), dungeonName);
+        // Schedule teleport check
+        Plugin plugin = getPlugin();
+        if (plugin != null) {
+            Bukkit.getScheduler().runTaskTimer(plugin, new Runnable() {
+                int attempts = 0;
                 
-                // Schedule teleport check
-                new BukkitRunnable() {
-                    int attempts = 0;
+                @Override
+                public void run() {
+                    attempts++;
                     
-                    @Override
-                    public void run() {
-                        attempts++;
+                    World currentWorld = player.getWorld();
+                    String worldName = currentWorld.getName();
+                    
+                    // Check if player is in dungeon world
+                    if (worldName.toLowerCase().contains(dungeonName.toLowerCase()) || 
+                        worldName.toLowerCase().contains("_" + dungeonName.toLowerCase())) {
                         
-                        // Check if player changed world (dungeon loaded)
-                        World currentWorld = player.getWorld();
-                        String worldName = currentWorld.getName();
+                        Location spawn = findDungeonSpawn(player, dungeonName, currentWorld);
                         
-                        if (worldName.toLowerCase().contains(dungeonName.toLowerCase())) {
-                            // Try to find spawn location
-                            Location spawn = findDungeonSpawn(player, dungeonName, currentWorld);
-                            
-                            if (spawn != null) {
-                                // Teleport player
-                                player.teleport(spawn);
-                                getLogger().info("Teleported " + player.getName() + " to dungeon spawn: " + spawn);
-                                pendingTeleports.remove(player.getUniqueId());
-                                this.cancel();
-                            } else if (attempts >= 20) { // 10 seconds timeout
-                                // Fallback: teleport to world spawn
-                                Location worldSpawn = currentWorld.getSpawnLocation();
-                                player.teleport(worldSpawn);
-                                getLogger().warning("Could not find dungeon spawn, using world spawn for " + player.getName());
-                                pendingTeleports.remove(player.getUniqueId());
-                                this.cancel();
-                            }
-                        } else if (attempts >= 40) { // 20 seconds timeout
-                            getLogger().warning("Timeout waiting for dungeon world for " + player.getName());
-                            pendingTeleports.remove(player.getUniqueId());
-                            this.cancel();
-                        }
-                    }
-                }.runTaskTimer(this, 10L, 10L); // Check every 0.5 seconds
-            }
-        }
-    }
-    
-    @EventHandler
-    public void onWorldChange(PlayerChangedWorldEvent event) {
-        Player player = event.getPlayer();
-        String dungeonName = pendingTeleports.get(player.getUniqueId());
-        
-        if (dungeonName != null) {
-            World newWorld = player.getWorld();
-            String worldName = newWorld.getName();
-            
-            // Check if this is the dungeon world
-            if (worldName.toLowerCase().contains(dungeonName.toLowerCase())) {
-                // Schedule teleport for next tick
-                new BukkitRunnable() {
-                    @Override
-                    public void run() {
-                        Location spawn = findDungeonSpawn(player, dungeonName, newWorld);
                         if (spawn != null) {
                             player.teleport(spawn);
-                            getLogger().info("Teleported " + player.getName() + " to dungeon spawn on world change: " + spawn);
-                        } else {
-                            // Try a few more times
-                            scheduleDelayedTeleport(player, dungeonName, newWorld, 5);
+                            System.out.println("[MythicDungeonsFix] Teleported " + player.getName() + " to spawn: " + 
+                                spawn.getBlockX() + ", " + spawn.getBlockY() + ", " + spawn.getBlockZ());
+                        } else if (attempts >= 10) {
+                            // Fallback to world spawn
+                            player.teleport(currentWorld.getSpawnLocation());
+                            System.out.println("[MythicDungeonsFix] Using world spawn as fallback for " + player.getName());
                         }
-                        pendingTeleports.remove(player.getUniqueId());
+                        
+                        // Stop checking after success or timeout
+                        if (spawn != null || attempts >= 10) {
+                            Bukkit.getScheduler().cancelTasks(plugin);
+                        }
+                    } else if (attempts >= 20) {
+                        System.out.println("[MythicDungeonsFix] Timeout waiting for dungeon world for " + player.getName());
+                        Bukkit.getScheduler().cancelTasks(plugin);
                     }
-                }.runTaskLater(this, 1L);
-            }
-        }
-    }
-    
-    private void scheduleDelayedTeleport(Player player, String dungeonName, World world, int attempts) {
-        if (attempts <= 0) {
-            Location worldSpawn = world.getSpawnLocation();
-            player.teleport(worldSpawn);
-            getLogger().warning("Using world spawn as fallback for " + player.getName());
-            return;
-        }
-        
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                Location spawn = findDungeonSpawn(player, dungeonName, world);
-                if (spawn != null) {
-                    player.teleport(spawn);
-                    getLogger().info("Successfully teleported " + player.getName() + " after delay");
-                } else {
-                    scheduleDelayedTeleport(player, dungeonName, world, attempts - 1);
                 }
-            }
-        }.runTaskLater(this, 20L); // Wait 1 second
+            }, 10L, 10L); // Check every 0.5 seconds
+        }
     }
     
-    private Location findDungeonSpawn(Player player, String dungeonName, World world) {
-        // Check cache first
+    private static Location findDungeonSpawn(Player player, String dungeonName, World world) {
         String cacheKey = world.getName() + "_" + dungeonName;
+        
+        // Check cache first
         Location cached = dungeonSpawns.get(cacheKey);
         if (cached != null) {
             return cached.clone();
         }
         
         try {
-            // Try to get spawn from MythicDungeons API via reflection
+            // Try to get spawn from MythicDungeons
             Object mdPlugin = Bukkit.getPluginManager().getPlugin("MythicDungeons");
             if (mdPlugin != null) {
-                // Try to get the dungeon instance
-                Method getDungeonMethod = mdPlugin.getClass().getMethod("getDungeon", String.class);
-                Object dungeon = getDungeonMethod.invoke(mdPlugin, dungeonName);
-                
-                if (dungeon != null) {
-                    // Try to get spawn location from dungeon
-                    Location spawn = tryGetSpawnFromDungeon(dungeon, world);
-                    if (spawn != null) {
-                        dungeonSpawns.put(cacheKey, spawn);
-                        return spawn;
-                    }
+                // Try to get spawn location
+                Location spawnLoc = tryGetSpawnFromDungeon(mdPlugin, dungeonName, world);
+                if (spawnLoc != null) {
+                    dungeonSpawns.put(cacheKey, spawnLoc);
+                    return spawnLoc;
                 }
                 
-                // Alternative: Try to get from active instances
-                spawn = tryGetSpawnFromActiveInstance(mdPlugin, player, world);
-                if (spawn != null) {
-                    dungeonSpawns.put(cacheKey, spawn);
-                    return spawn;
+                // Try alternative method
+                spawnLoc = tryGetSpawnFromActiveInstance(mdPlugin, player, world);
+                if (spawnLoc != null) {
+                    dungeonSpawns.put(cacheKey, spawnLoc);
+                    return spawnLoc;
                 }
             }
         } catch (Exception e) {
-            getLogger().warning("Error finding dungeon spawn via reflection: " + e.getMessage());
+            System.err.println("[MythicDungeonsFix] Error finding spawn: " + e.getMessage());
         }
         
-        // Fallback: Look for specific coordinates
-        // Procedural dungeons often spawn at specific coordinates
+        // Fallback: Common spawn points
         Location[] commonSpawns = {
-            new Location(world, 0.5, 65, 0.5), // Common spawn point
-            new Location(world, 8.5, 65, 8.5), // Alternative spawn
-            new Location(world, 0.5, 100, 0.5), // High spawn
-            world.getSpawnLocation() // World spawn as last resort
+            new Location(world, 0.5, 65, 0.5),
+            new Location(world, 8.5, 65, 8.5),
+            new Location(world, 0.5, 100, 0.5),
+            world.getSpawnLocation()
         };
         
         for (Location loc : commonSpawns) {
@@ -196,79 +120,78 @@ public class MythicDungeonsFix extends JavaPlugin implements Listener {
         return null;
     }
     
-    private Location tryGetSpawnFromDungeon(Object dungeon, World world) {
+    private static Location tryGetSpawnFromDungeon(Object mdPlugin, String dungeonName, World world) {
         try {
-            // Try different methods to get spawn
-            String[] methodNames = {"getSpawnLocation", "getSpawn", "getStartLocation", "getEntryPoint"};
+            Method getDungeonMethod = mdPlugin.getClass().getMethod("getDungeon", String.class);
+            Object dungeon = getDungeonMethod.invoke(mdPlugin, dungeonName);
             
-            for (String methodName : methodNames) {
-                try {
-                    Method method = dungeon.getClass().getMethod(methodName);
-                    Object result = method.invoke(dungeon);
-                    
-                    if (result instanceof Location) {
-                        Location loc = (Location) result;
-                        // Update world if needed
-                        if (loc.getWorld() == null || !loc.getWorld().equals(world)) {
-                            loc = new Location(world, loc.getX(), loc.getY(), loc.getZ(), loc.getYaw(), loc.getPitch());
-                        }
-                        return loc;
-                    }
-                } catch (NoSuchMethodException ignored) {
-                    // Try next method
-                }
-            }
-            
-            // Try to get from layout
-            try {
-                Method getLayoutMethod = dungeon.getClass().getMethod("getLayout");
-                Object layout = getLayoutMethod.invoke(dungeon);
+            if (dungeon != null) {
+                // Try different methods
+                String[] methodNames = {"getSpawnLocation", "getSpawn", "getStartLocation"};
                 
-                if (layout != null) {
-                    Method getRoomsMethod = layout.getClass().getMethod("getRooms");
-                    Object rooms = getRoomsMethod.invoke(layout);
-                    
-                    if (rooms instanceof java.util.List && !((java.util.List<?>) rooms).isEmpty()) {
-                        Object firstRoom = ((java.util.List<?>) rooms).get(0);
+                for (String methodName : methodNames) {
+                    try {
+                        Method method = dungeon.getClass().getMethod(methodName);
+                        Object result = method.invoke(dungeon);
                         
-                        // Get room location
-                        Method getLocationMethod = firstRoom.getClass().getMethod("getLocation");
-                        Object locObj = getLocationMethod.invoke(firstRoom);
-                        
-                        if (locObj != null) {
-                            // Convert to Bukkit Location
-                            double x = getDoubleField(locObj, "x");
-                            double y = getDoubleField(locObj, "y");
-                            double z = getDoubleField(locObj, "z");
-                            
-                            return new Location(world, x + 8, y + 1, z + 8); // Center of room + offset
+                        if (result instanceof Location) {
+                            Location loc = (Location) result;
+                            if (loc.getWorld() == null || !loc.getWorld().equals(world)) {
+                                loc = new Location(world, loc.getX(), loc.getY(), loc.getZ());
+                            }
+                            return loc;
                         }
+                    } catch (NoSuchMethodException ignored) {
+                        // Try next method
                     }
                 }
-            } catch (Exception ignored) {
-                // Layout method not available
+                
+                // Try to get from layout
+                try {
+                    Method getLayoutMethod = dungeon.getClass().getMethod("getLayout");
+                    Object layout = getLayoutMethod.invoke(dungeon);
+                    
+                    if (layout != null) {
+                        Method getRoomsMethod = layout.getClass().getMethod("getRooms");
+                        Object rooms = getRoomsMethod.invoke(layout);
+                        
+                        if (rooms instanceof java.util.List && !((java.util.List<?>) rooms).isEmpty()) {
+                            Object firstRoom = ((java.util.List<?>) rooms).get(0);
+                            
+                            Method getLocationMethod = firstRoom.getClass().getMethod("getLocation");
+                            Object locObj = getLocationMethod.invoke(firstRoom);
+                            
+                            if (locObj != null) {
+                                double x = getDoubleField(locObj, "x");
+                                double y = getDoubleField(locObj, "y");
+                                double z = getDoubleField(locObj, "z");
+                                
+                                return new Location(world, x + 8, y + 1, z + 8);
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {
+                    // Layout method not available
+                }
             }
-            
         } catch (Exception e) {
-            // Silent fail, try other methods
+            // Silent fail
         }
         
         return null;
     }
     
-    private Location tryGetSpawnFromActiveInstance(Object mdPlugin, Player player, World world) {
+    private static Location tryGetSpawnFromActiveInstance(Object mdPlugin, Player player, World world) {
         try {
-            // Try to get active instance for player
             Method getInstanceMethod = mdPlugin.getClass().getMethod("getActiveInstance", Player.class);
             Object instance = getInstanceMethod.invoke(mdPlugin, player);
             
             if (instance != null) {
-                // Try to get spawn from instance
                 Method getSpawnMethod = instance.getClass().getMethod("getSpawnLocation");
-                Object spawn = getSpawnMethod.invoke(instance);
+                Object spawnObj = getSpawnMethod.invoke(instance);
                 
-                if (spawn instanceof Location) {
-                    Location loc = (Location) spawn;
+                if (spawnObj instanceof Location) {
+                    Location loc = (Location) spawnObj;
                     if (loc.getWorld() == null || !loc.getWorld().equals(world)) {
                         loc = new Location(world, loc.getX(), loc.getY(), loc.getZ());
                     }
@@ -282,7 +205,7 @@ public class MythicDungeonsFix extends JavaPlugin implements Listener {
         return null;
     }
     
-    private double getDoubleField(Object obj, String fieldName) {
+    private static double getDoubleField(Object obj, String fieldName) {
         try {
             Field field = obj.getClass().getDeclaredField(fieldName);
             field.setAccessible(true);
@@ -297,22 +220,88 @@ public class MythicDungeonsFix extends JavaPlugin implements Listener {
         return 0.0;
     }
     
-    private boolean isSafeLocation(Location loc) {
+    private static boolean isSafeLocation(Location loc) {
         if (loc == null || loc.getWorld() == null) {
             return false;
         }
         
         try {
-            // Check if chunk is loaded
             if (!loc.getWorld().isChunkLoaded(loc.getBlockX() >> 4, loc.getBlockZ() >> 4)) {
                 loc.getWorld().loadChunk(loc.getBlockX() >> 4, loc.getBlockZ() >> 4);
             }
             
-            // Check if location is safe (not in solid block)
             return !loc.getBlock().getType().isSolid() && 
                    !loc.clone().add(0, 1, 0).getBlock().getType().isSolid();
         } catch (Exception e) {
             return false;
+        }
+    }
+    
+    private static Plugin getPlugin() {
+        Plugin plugin = Bukkit.getPluginManager().getPlugin("MythicDungeons");
+        if (plugin == null) {
+            plugin = Bukkit.getPluginManager().getPlugin("Youer");
+        }
+        if (plugin == null) {
+            // Get any plugin to use as scheduler
+            Plugin[] plugins = Bukkit.getPluginManager().getPlugins();
+            if (plugins.length > 0) {
+                plugin = plugins[0];
+            }
+        }
+        return plugin;
+    }
+    
+    /**
+     * Enhanced teleport method for compatibility
+     */
+    public static void enhancedTeleport(Entity entity, Location target) {
+        if (entity == null || target == null) return;
+        
+        World world = target.getWorld();
+        if (world == null) return;
+        
+        // For players in dungeon worlds, use special handling
+        if (entity instanceof Player) {
+            Player player = (Player) entity;
+            String worldName = world.getName().toLowerCase();
+            
+            if (worldName.contains("dungeon") || worldName.contains("deneme") || worldName.contains("_")) {
+                // Extract dungeon name from world name
+                String dungeonName = worldName.replace("minecraft:", "").split("_")[0];
+                
+                // Use our fix
+                fixProceduralTeleport(player, dungeonName);
+                return;
+            }
+        }
+        
+        // Normal teleport for non-dungeon worlds
+        loadChunksAround(target);
+        
+        if (Bukkit.isPrimaryThread()) {
+            entity.teleport(target);
+        } else {
+            Plugin plugin = getPlugin();
+            if (plugin != null) {
+                Bukkit.getScheduler().runTask(plugin, () -> entity.teleport(target));
+            }
+        }
+    }
+    
+    private static void loadChunksAround(Location loc) {
+        World world = loc.getWorld();
+        if (world == null) return;
+        
+        int chunkX = loc.getBlockX() >> 4;
+        int chunkZ = loc.getBlockZ() >> 4;
+        
+        for (int x = -1; x <= 1; x++) {
+            for (int z = -1; z <= 1; z++) {
+                if (!world.isChunkLoaded(chunkX + x, chunkZ + z)) {
+                    world.loadChunk(chunkX + x, chunkZ + z);
+                }
+            }
         }
     }
 }
