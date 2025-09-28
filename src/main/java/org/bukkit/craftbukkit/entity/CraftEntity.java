@@ -1065,7 +1065,29 @@ public abstract class CraftEntity implements org.bukkit.entity.Entity {
     // Paper start - more teleport API / async chunk API
     @Override
     public java.util.concurrent.CompletableFuture<Boolean> teleportAsync(final Location location, final TeleportCause cause, final io.papermc.paper.entity.TeleportFlag... teleportFlags) {
-        throw new UnsupportedOperationException();
+        // Youer fix: Implement teleportAsync for MythicDungeons compatibility
+        java.util.concurrent.CompletableFuture<Boolean> future = new java.util.concurrent.CompletableFuture<>();
+        
+        // Run teleport on main thread
+        if (org.bukkit.Bukkit.isPrimaryThread()) {
+            try {
+                boolean result = this.teleport(location, cause, teleportFlags);
+                future.complete(result);
+            } catch (Exception e) {
+                future.completeExceptionally(e);
+            }
+        } else {
+            org.bukkit.Bukkit.getScheduler().runTask(this.server, () -> {
+                try {
+                    boolean result = this.teleport(location, cause, teleportFlags);
+                    future.complete(result);
+                } catch (Exception e) {
+                    future.completeExceptionally(e);
+                }
+            });
+        }
+        
+        return future;
     }
     // Paper end - more teleport API / async chunk API
 
