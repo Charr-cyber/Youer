@@ -2,6 +2,7 @@ package com.mohistmc.youer.bukkit.pluginfix;
 
 import com.mohistmc.youer.Youer;
 import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.*;
 import org.bukkit.Bukkit;
@@ -20,10 +21,17 @@ import org.objectweb.asm.Opcodes;
 import static org.objectweb.asm.Opcodes.ARETURN;
 
 /**
- * Simplified PluginFixManager - Removed force teleport and dungeon scanning
- * @version 4.0 - Simplified version without force teleport and dungeon scanning
+ * Optimized PluginFixManager - Fixed dungeon scanning spam and improved performance
+ * @version 5.0 - Optimized scanning with caching, reduced spam, better Youer compatibility
  */
 public class PluginFixManager {
+    
+    // ================== CACHING MECHANISM FOR SCAN OPTIMIZATION ==================
+    private static final Map<String, Long> scanCache = new ConcurrentHashMap<>();
+    private static final long CACHE_EXPIRY_MS = 30000; // 30 seconds cache expiry
+    private static final Map<String, Location> dungeonSpawnCache = new ConcurrentHashMap<>();
+    private static long lastScanLogTime = 0;
+    private static final long SCAN_LOG_THROTTLE_MS = 5000; // Only log scans every 5 seconds
     
     // ================== SIMPLIFIED TELEPORT HANDLER ==================
     
@@ -67,7 +75,7 @@ public class PluginFixManager {
             return result;
         }
 
-        final int maxAttempts = 60; // ~30 seconds at 10 ticks for procedural generation
+        final int maxAttempts = 10; // Reduced from 60 to 10 (~5 seconds total)
         final int periodTicks = 10;
 
         class RetryState { int attempts = 0; }
@@ -147,11 +155,21 @@ public class PluginFixManager {
         
         System.out.println("[MythicDungeons] Loading chunks around chunk (" + chunkX + "," + chunkZ + ")");
         
-        // Force load chunks with generation
+        // Force load chunks with generation (with Youer/Mohist compatibility)
         for (int x = -3; x <= 3; x++) {
             for (int z = -3; z <= 3; z++) {
-                if (!world.isChunkLoaded(chunkX + x, chunkZ + z)) {
-                    world.loadChunk(chunkX + x, chunkZ + z, true); // Force generation
+                try {
+                    if (!world.isChunkLoaded(chunkX + x, chunkZ + z)) {
+                        world.loadChunk(chunkX + x, chunkZ + z, true); // Force generation
+                    }
+                } catch (Exception e) {
+                    // Fallback for Youer/Mohist - try without generation flag
+                    try {
+                        world.loadChunk(chunkX + x, chunkZ + z, false);
+                    } catch (Exception ex) {
+                        // Ignore individual chunk loading failures
+                        System.err.println("[MythicDungeons] Failed to load chunk (" + (chunkX + x) + ", " + (chunkZ + z) + "): " + ex.getMessage());
+                    }
                 }
             }
         }
@@ -161,30 +179,57 @@ public class PluginFixManager {
         // Wait longer for dungeon generation to complete, then teleport
         Bukkit.getScheduler().runTaskLater(getPlugin(), () -> {
             try {
-                // Additional chunk validation
+            // Additional chunk validation (with error handling)
+            try {
                 validateChunkGeneration(world, chunkX, chunkZ);
+            } catch (Exception e) {
+                System.err.println("[MythicDungeons] Chunk validation failed, continuing anyway: " + e.getMessage());
+            }
                 
             // Find safe ground at the target location
-            Location safeLocation = findSafeGroundAtTarget(target);
+            Location safeLocation = null;
+            try {
+                safeLocation = findSafeGroundAtTarget(target);
+            } catch (Exception e) {
+                System.err.println("[MythicDungeons] Failed to find safe ground, using fallback: " + e.getMessage());
+                safeLocation = new Location(world, target.getX(), 50, target.getZ(), target.getYaw(), target.getPitch());
+            }
                 
-                // Ensure the target location is valid
-                if (safeLocation == null || safeLocation.getWorld() == null) {
-                    System.err.println("[MythicDungeons] Invalid safe location, using fallback");
-                    safeLocation = new Location(world, target.getX(), 65, target.getZ(), target.getYaw(), target.getPitch());
-                }
+            // Ensure the target location is valid
+            if (safeLocation == null || safeLocation.getWorld() == null) {
+                System.err.println("[MythicDungeons] Invalid safe location, using fallback");
+                safeLocation = new Location(world, target.getX(), 50, target.getZ(), target.getYaw(), target.getPitch());
+            }
             
-            boolean success = entity.teleport(safeLocation);
+            boolean success = false;
+            try {
+                success = entity.teleport(safeLocation);
+            } catch (Exception e) {
+                System.err.println("[MythicDungeons] Teleport failed: " + e.getMessage());
+                // Try again with sync teleport if async fails
+                try {
+                    success = performSyncTeleport(entity, safeLocation);
+                } catch (Exception ex) {
+                    System.err.println("[MythicDungeons] Sync teleport also failed: " + ex.getMessage());
+                    success = false;
+                }
+            }
             
             if (success) {
                 System.out.println("[MythicDungeons] Successfully teleported " + entity.getName() + 
                     " to X:" + safeLocation.getBlockX() + " Y:" + safeLocation.getBlockY() + " Z:" + safeLocation.getBlockZ());
             } else {
                     System.err.println("[MythicDungeons] Failed to teleport " + entity.getName() + ", trying fallback location");
-                    // Try fallback teleport
-                    Location fallback = new Location(world, target.getX(), 65, target.getZ(), target.getYaw(), target.getPitch());
-                    success = entity.teleport(fallback);
-                    if (success) {
-                        System.out.println("[MythicDungeons] Fallback teleport successful");
+                    // Try fallback teleport with better Y level
+                    Location fallback = new Location(world, target.getX(), 50, target.getZ(), target.getYaw(), target.getPitch());
+                    try {
+                        success = entity.teleport(fallback);
+                        if (success) {
+                            System.out.println("[MythicDungeons] Fallback teleport successful");
+                        }
+                    } catch (Exception e) {
+                        System.err.println("[MythicDungeons] Fallback teleport also failed: " + e.getMessage());
+                        success = false;
                     }
                 }
                 
@@ -195,6 +240,32 @@ public class PluginFixManager {
                 future.complete(false);
             }
         }, 40L); // 2 second delay to allow dungeon generation
+    }
+    
+    /**
+     * Perform sync teleport with Youer/Mohist compatibility
+     */
+    private static boolean performSyncTeleport(Entity entity, Location target) {
+        try {
+            // Try to use reflection for better compatibility
+            java.lang.reflect.Method teleportMethod = entity.getClass().getMethod("teleport", Location.class);
+            Object result = teleportMethod.invoke(entity, target);
+            if (result instanceof Boolean) {
+                return (Boolean) result;
+            }
+            return true; // Assume success if no boolean returned
+        } catch (Exception e) {
+            // Final fallback - set location directly
+            try {
+                java.lang.reflect.Method setLocationMethod = entity.getClass().getMethod("setLocation", 
+                    double.class, double.class, double.class, float.class, float.class);
+                setLocationMethod.invoke(entity, target.getX(), target.getY(), target.getZ(), 
+                    target.getYaw(), target.getPitch());
+                return true;
+            } catch (Exception ex) {
+                return false;
+            }
+        }
     }
     
     /**
@@ -300,16 +371,28 @@ public class PluginFixManager {
         }
         
         // Last resort: create emergency platform
-        System.out.println("[MythicDungeons] No solid ground found, creating emergency platform at Y=65");
-        return createEmergencyPlatform(world, x, 65, z);
+        System.out.println("[MythicDungeons] No solid ground found, creating emergency platform at Y=50");
+        return createEmergencyPlatform(world, x, 50, z);
     }
     
     /**
-     * Get spawn location from MythicDungeons API using reflection
+     * Get spawn location from MythicDungeons API using reflection with caching
      */
     private static Location getSpawnLocationFromMythicDungeons(World world) {
+        // Check spawn cache first
+        String spawnCacheKey = world.getName() + ":spawn";
+        Location cachedSpawn = dungeonSpawnCache.get(spawnCacheKey);
+        if (cachedSpawn != null) {
+            return cachedSpawn.clone(); // Return a copy to prevent modification
+        }
+        
         try {
-            System.out.println("[MythicDungeons] Trying to get spawn location from MythicDungeons API...");
+            // Reduce log spam - only log every 5 seconds
+            boolean shouldLog = (System.currentTimeMillis() - lastScanLogTime) > SCAN_LOG_THROTTLE_MS;
+            if (shouldLog) {
+                System.out.println("[MythicDungeons] Trying to get spawn location from MythicDungeons API...");
+                lastScanLogTime = System.currentTimeMillis();
+            }
             
             // Try to resolve a manager/provider from multiple sources
             Object dungeonManager = tryResolveDungeonManager();
@@ -411,6 +494,7 @@ public class PluginFixManager {
                                             if (location != null) {
                                                 System.out.println("[MythicDungeons] Found room center location using method: " + locMethodName);
                                                 System.out.println("[MythicDungeons] PROCEDURAL DUNGEON SPAWN: " + location.getBlockX() + ", " + location.getBlockY() + ", " + location.getBlockZ());
+                                                dungeonSpawnCache.put(spawnCacheKey, location);
                                                 return location;
                                             }
                                         } catch (Exception e) {
@@ -476,11 +560,12 @@ public class PluginFixManager {
                                                     java.lang.reflect.Method locMethod = startRoom.getClass().getMethod(locMethodName);
                                                     Object locationObj = locMethod.invoke(startRoom);
                                                     Location location = coerceToBukkitLocation(locationObj, world);
-                                                    if (location != null) {
-                                                        System.out.println("[MythicDungeons] Found room center location using method: " + locMethodName);
-                                                        System.out.println("[MythicDungeons] PROCEDURAL DUNGEON SPAWN: " + location.getBlockX() + ", " + location.getBlockY() + ", " + location.getBlockZ());
-                                                        return location;
-                                                    }
+                                                if (location != null) {
+                                                    System.out.println("[MythicDungeons] Found room center location using method: " + locMethodName);
+                                                    System.out.println("[MythicDungeons] PROCEDURAL DUNGEON SPAWN: " + location.getBlockX() + ", " + location.getBlockY() + ", " + location.getBlockZ());
+                                                    dungeonSpawnCache.put(spawnCacheKey, location);
+                                                    return location;
+                                                }
                                                 } catch (Exception e) {
                                                     // Try next method
                                                 }
@@ -603,10 +688,23 @@ public class PluginFixManager {
     
     /**
      * Find dungeon room at specific coordinates by scanning downward
-     * Enhanced for procedural dungeons with better room detection
+     * Enhanced for procedural dungeons with better room detection and caching
      */
     private static Location findDungeonRoomAtCoordinates(World world, int x, int z) {
-        System.out.println("[MythicDungeons] Scanning for dungeon room at X:" + x + " Z:" + z);
+        // Check cache first
+        String cacheKey = world.getName() + ":" + x + ":" + z;
+        Long lastScanTime = scanCache.get(cacheKey);
+        if (lastScanTime != null && (System.currentTimeMillis() - lastScanTime) < CACHE_EXPIRY_MS) {
+            // Recently scanned, don't scan again
+            return null;
+        }
+        
+        // Throttle scan logging to reduce spam
+        boolean shouldLog = (System.currentTimeMillis() - lastScanLogTime) > SCAN_LOG_THROTTLE_MS;
+        if (shouldLog) {
+            System.out.println("[MythicDungeons] Scanning for dungeon room at X:" + x + " Z:" + z);
+            lastScanLogTime = System.currentTimeMillis();
+        }
         
         // For procedural dungeons, scan from Y=80 down to Y=10 (typical dungeon range)
         for (int y = 80; y >= 10; y--) {
@@ -619,7 +717,9 @@ public class PluginFixManager {
                 above1.getType().isAir() && 
                 above2.getType().isAir()) {
                 
-                System.out.println("[MythicDungeons] Found potential room floor at Y=" + y);
+                if (shouldLog) {
+                    System.out.println("[MythicDungeons] Found potential room floor at Y=" + y);
+                }
                 
                 // Check if it looks like a dungeon room (has some space)
                 int airCount = 0;
@@ -640,16 +740,24 @@ public class PluginFixManager {
                 // If we found enough air space and some solid walls, it's likely a room
                 // Relaxed criteria for better room detection
                 if (airCount >= 20 && solidCount >= 5) {
-                    System.out.println("[MythicDungeons] Confirmed dungeon room at Y=" + (y + 1) + " with " + airCount + " air blocks, " + solidCount + " solid blocks");
+                    if (shouldLog) {
+                        System.out.println("[MythicDungeons] Confirmed dungeon room at Y=" + (y + 1) + " with " + airCount + " air blocks, " + solidCount + " solid blocks");
+                    }
+                    // Cache successful scan
+                    scanCache.put(cacheKey, System.currentTimeMillis());
                     return new Location(world, x + 0.5, y + 1, z + 0.5);
                 }
             }
         }
         
-        // If no room found at exact coordinates, try nearby with wider search
-        System.out.println("[MythicDungeons] No room found at exact coordinates, scanning nearby...");
-        for (int dx = -10; dx <= 10; dx++) {
-            for (int dz = -10; dz <= 10; dz++) {
+        // If no room found at exact coordinates, try nearby with reduced search radius
+        if (shouldLog) {
+            System.out.println("[MythicDungeons] No room found at exact coordinates, scanning nearby...");
+        }
+        
+        // Reduced search radius from 10 to 5 for better performance
+        for (int dx = -5; dx <= 5; dx++) {
+            for (int dz = -5; dz <= 5; dz++) {
                 if (dx == 0 && dz == 0) continue; // Skip center, already checked
                 
                 for (int y = 80; y >= 10; y--) {
@@ -674,7 +782,11 @@ public class PluginFixManager {
                         }
                         
                         if (nearbyAirCount >= 10) {
-                            System.out.println("[MythicDungeons] Found nearby room at X:" + (x + dx) + " Y:" + (y + 1) + " Z:" + (z + dz) + " with " + nearbyAirCount + " air blocks");
+                            if (shouldLog) {
+                                System.out.println("[MythicDungeons] Found nearby room at X:" + (x + dx) + " Y:" + (y + 1) + " Z:" + (z + dz) + " with " + nearbyAirCount + " air blocks");
+                            }
+                            // Cache successful scan
+                            scanCache.put(cacheKey, System.currentTimeMillis());
                             return new Location(world, x + dx + 0.5, y + 1, z + dz + 0.5);
                         }
                     }
@@ -682,7 +794,12 @@ public class PluginFixManager {
             }
         }
         
-        System.out.println("[MythicDungeons] No dungeon room found in scan area");
+        // Cache failed scan to prevent repeated attempts
+        scanCache.put(cacheKey, System.currentTimeMillis());
+        
+        if (shouldLog) {
+            System.out.println("[MythicDungeons] No dungeon room found in scan area");
+        }
         return null;
     }
     
@@ -703,20 +820,68 @@ public class PluginFixManager {
     }
     
     /**
-     * Create emergency platform for safe landing
+     * Create emergency platform for safe landing with intelligent Y level
      */
     private static Location createEmergencyPlatform(World world, int x, int y, int z) {
+        // Use a more reasonable default Y level for dungeons (50 instead of 65)
+        if (y > 100 || y < 10) {
+            y = 50; // Middle of typical dungeon range (30-80)
+        }
+        
+        // Check if there's already solid ground at this location
+        org.bukkit.block.Block checkBlock = world.getBlockAt(x, y, z);
+        if (!checkBlock.getType().isAir() && !checkBlock.isLiquid()) {
+            // Already solid, just clear space above
+            for (int dy = 1; dy <= 3; dy++) {
+                world.getBlockAt(x, y + dy, z).setType(Material.AIR);
+            }
+            return new Location(world, x + 0.5, y + 1, z + 0.5);
+        }
+        
         System.out.println("[MythicDungeons] Creating emergency platform at " + x + "," + y + "," + z);
         
-        // Create 3x3 platform
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dz = -1; dz <= 1; dz++) {
-                // Create solid floor
-                world.getBlockAt(x + dx, y, z + dz).setType(Material.STONE);
-                
-                // Clear space above
-                for (int dy = 1; dy <= 3; dy++) {
-                    world.getBlockAt(x + dx, y + dy, z + dz).setType(Material.AIR);
+        try {
+            // Create 5x5 platform with border for safety
+            for (int dx = -2; dx <= 2; dx++) {
+                for (int dz = -2; dz <= 2; dz++) {
+                    // Create solid floor
+                    org.bukkit.block.Block floorBlock = world.getBlockAt(x + dx, y, z + dz);
+                    
+                    // Center 3x3 area - stone
+                    if (Math.abs(dx) <= 1 && Math.abs(dz) <= 1) {
+                        floorBlock.setType(Material.STONE);
+                    }
+                    // Border - glass for visibility
+                    else {
+                        floorBlock.setType(Material.GLASS);
+                    }
+                    
+                    // Clear space above the entire platform
+                    for (int dy = 1; dy <= 4; dy++) {
+                        world.getBlockAt(x + dx, y + dy, z + dz).setType(Material.AIR);
+                    }
+                }
+            }
+            
+            // Add torches for light at corners
+            world.getBlockAt(x + 2, y + 1, z + 2).setType(Material.TORCH);
+            world.getBlockAt(x - 2, y + 1, z + 2).setType(Material.TORCH);
+            world.getBlockAt(x + 2, y + 1, z - 2).setType(Material.TORCH);
+            world.getBlockAt(x - 2, y + 1, z - 2).setType(Material.TORCH);
+            
+        } catch (Exception e) {
+            // Fallback to simple platform if advanced creation fails (Youer compatibility)
+            System.err.println("[MythicDungeons] Failed to create advanced platform, using simple fallback: " + e.getMessage());
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    try {
+                        world.getBlockAt(x + dx, y, z + dz).setType(Material.STONE);
+                        for (int dy = 1; dy <= 3; dy++) {
+                            world.getBlockAt(x + dx, y + dy, z + dz).setType(Material.AIR);
+                        }
+                    } catch (Exception ex) {
+                        // Ignore individual block failures
+                    }
                 }
             }
         }
@@ -1119,5 +1284,23 @@ public class PluginFixManager {
     
     public static boolean hasPaperAsyncSupport() { 
         return false; 
+    }
+    
+    /**
+     * Clear scan cache - useful for plugin reload or when dungeons are regenerated
+     */
+    public static void clearScanCache() {
+        scanCache.clear();
+        dungeonSpawnCache.clear();
+        lastScanLogTime = 0;
+        System.out.println("[MythicDungeons] Scan cache cleared");
+    }
+    
+    /**
+     * Get cache statistics for debugging
+     */
+    public static String getCacheStats() {
+        return String.format("[MythicDungeons Cache] Scan entries: %d, Spawn entries: %d", 
+                            scanCache.size(), dungeonSpawnCache.size());
     }
 }
