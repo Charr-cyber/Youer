@@ -1077,7 +1077,8 @@ public abstract class CraftEntity implements org.bukkit.entity.Entity {
                 future.completeExceptionally(e);
             }
         } else {
-            org.bukkit.Bukkit.getScheduler().runTask(this.server, () -> {
+            // Use MinecraftServer.execute for thread-safe execution
+            this.server.getServer().execute(() -> {
                 try {
                     boolean result = this.teleport(location, cause, teleportFlags);
                     future.complete(result);
