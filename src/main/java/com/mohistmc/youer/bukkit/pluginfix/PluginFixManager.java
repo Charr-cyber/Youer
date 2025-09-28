@@ -927,19 +927,57 @@ public class PluginFixManager {
     // ================== SIMPLIFIED ASM PATCHES ==================
     
     /**
-     * Patch MythicDungeons Util class teleport methods - Simplified version
+     * Patch MythicDungeons Util class teleport methods - Enhanced for Youer/Mohist
      */
     public static void patchDungeonTeleport(ClassNode node) {
-        System.out.println("[MythicDungeons] Patching Util class teleport methods (simplified)");
+        System.out.println("[MythicDungeons] Patching Util class teleport methods (enhanced for Youer)");
         
         for (MethodNode method : node.methods) {
-            if (method.name.equals("forceTeleport") || method.name.equals("forceTeleport2")) {
+            // Replace forceTeleport implementation completely
+            if (method.name.equals("forceTeleport")) {
+                System.out.println("[MythicDungeons] Replacing forceTeleport with enhanced implementation");
+                replaceForceTeleportMethod(method);
+            }
+            else if (method.name.equals("forceTeleport2")) {
                 patchTeleportMethod(method);
             }
             
             // Replace async teleports with sync
             replaceAsyncTeleports(method);
         }
+    }
+    
+    /**
+     * Replace forceTeleport method completely with our enhanced version
+     */
+    private static void replaceForceTeleportMethod(MethodNode method) {
+        System.out.println("[MythicDungeons] Completely replacing forceTeleport method");
+        
+        // Clear the original method instructions
+        method.instructions.clear();
+        method.tryCatchBlocks.clear();
+        
+        // Create new method body that calls our forceTeleport2
+        InsnList newCode = new InsnList();
+        
+        // Load parameters (entity, location)
+        newCode.add(new VarInsnNode(Opcodes.ALOAD, 0)); // Entity
+        newCode.add(new VarInsnNode(Opcodes.ALOAD, 1)); // Location
+        
+        // Call our enhanced forceTeleport2 method
+        newCode.add(new MethodInsnNode(Opcodes.INVOKESTATIC, 
+            Type.getInternalName(PluginFixManager.class),
+            "forceTeleport2",
+            "(Lorg/bukkit/entity/Entity;Lorg/bukkit/Location;)V",
+            false));
+        
+        // Return
+        newCode.add(new InsnNode(Opcodes.RETURN));
+        
+        // Set the new instructions
+        method.instructions = newCode;
+        
+        System.out.println("[MythicDungeons] forceTeleport method replaced successfully");
     }
     
     /**
@@ -1302,5 +1340,172 @@ public class PluginFixManager {
     public static String getCacheStats() {
         return String.format("[MythicDungeons Cache] Scan entries: %d, Spawn entries: %d", 
                             scanCache.size(), dungeonSpawnCache.size());
+    }
+    
+    /**
+     * Hook for MythicDungeons play command - ensures players teleport correctly
+     * This should be called when a dungeon instance starts
+     */
+    public static void onDungeonPlay(Player player, World dungeonWorld) {
+        System.out.println("[MythicDungeons] Player " + player.getName() + " is entering dungeon world: " + dungeonWorld.getName());
+        
+        // Clear any cached spawn for this world to force fresh lookup
+        String spawnCacheKey = dungeonWorld.getName() + ":spawn";
+        dungeonSpawnCache.remove(spawnCacheKey);
+        
+        // Schedule teleport with delay to ensure dungeon is generated
+        Bukkit.getScheduler().runTaskLater(getPlugin(), () -> {
+            Location spawn = findProceduralDungeonSpawn(dungeonWorld);
+            if (spawn == null) {
+                spawn = getSpawnLocationFromMythicDungeons(dungeonWorld);
+            }
+            if (spawn == null) {
+                // Fallback to world spawn or center
+                spawn = new Location(dungeonWorld, 0, 65, 0);
+                System.out.println("[MythicDungeons] WARNING: Could not find dungeon spawn, using fallback");
+            }
+            
+            // Use our enhanced teleport
+            forceTeleport2(player, spawn);
+        }, 20L); // 1 second delay
+    }
+    
+    /**
+     * Direct hook to get MythicDungeons dungeon instance for a world
+     */
+    private static Object getMythicDungeonsInstance(World world) {
+        try {
+            // Get MythicDungeons main instance
+            Plugin plugin = Bukkit.getPluginManager().getPlugin("MythicDungeons");
+            if (plugin == null) return null;
+            
+            // Try to get the instance manager
+            java.lang.reflect.Method getInstanceManager = plugin.getClass().getMethod("getInstanceManager");
+            Object instanceManager = getInstanceManager.invoke(plugin);
+            if (instanceManager == null) return null;
+            
+            // Try to get instance by world
+            java.lang.reflect.Method getInstanceByWorld = instanceManager.getClass().getMethod("getInstanceByWorld", World.class);
+            return getInstanceByWorld.invoke(instanceManager, world);
+            
+        } catch (Exception e) {
+            System.out.println("[MythicDungeons] Could not get instance via new method: " + e.getMessage());
+        }
+        
+        // Fallback to dungeon manager approach
+        return null;
+    }
+    
+    /**
+     * Enhanced spawn finder specifically for procedural dungeons
+     */
+    private static Location findProceduralDungeonSpawn(World world) {
+        try {
+            Object instance = getMythicDungeonsInstance(world);
+            if (instance == null) {
+                System.out.println("[MythicDungeons] No instance found for world: " + world.getName());
+                return null;
+            }
+            
+            // Check if it's a playable instance
+            Class<?> instancePlayableClass = Class.forName("net.playavalon.mythicdungeons.api.parents.instances.InstancePlayable");
+            if (!instancePlayableClass.isInstance(instance)) {
+                System.out.println("[MythicDungeons] Instance is not playable");
+                return null;
+            }
+            
+            // Try to get layout
+            java.lang.reflect.Method getLayout = instance.getClass().getMethod("getLayout");
+            Object layout = getLayout.invoke(instance);
+            
+            if (layout != null) {
+                // Get first/start room
+                java.lang.reflect.Method getFirst = layout.getClass().getMethod("getFirst");
+                Object firstRoom = getFirst.invoke(layout);
+                
+                if (firstRoom != null) {
+                    // Get spawn from room
+                    java.lang.reflect.Method getSpawn = firstRoom.getClass().getMethod("getSpawn");
+                    Object spawnObj = getSpawn.invoke(firstRoom);
+                    
+                    if (spawnObj instanceof Location) {
+                        Location spawn = (Location) spawnObj;
+                        System.out.println("[MythicDungeons] Found procedural spawn via Layout.getFirst().getSpawn(): " + 
+                            spawn.getBlockX() + ", " + spawn.getBlockY() + ", " + spawn.getBlockZ());
+                        return spawn;
+                    }
+                    
+                    // Try getting anchor/paste position as fallback
+                    try {
+                        java.lang.reflect.Method getAnchor = firstRoom.getClass().getMethod("getAnchor");
+                        Object anchorObj = getAnchor.invoke(firstRoom);
+                        Location anchorLoc = coerceToBukkitLocation(anchorObj, world);
+                        if (anchorLoc != null) {
+                            // Add offset for player spawn (center of room, slightly above floor)
+                            anchorLoc.add(8, 2, 8); // Assuming 16x16 rooms
+                            System.out.println("[MythicDungeons] Using anchor location as spawn: " + 
+                                anchorLoc.getBlockX() + ", " + anchorLoc.getBlockY() + ", " + anchorLoc.getBlockZ());
+                            return anchorLoc;
+                        }
+                    } catch (Exception e) {
+                        // Ignore
+                    }
+                }
+            }
+            
+        } catch (Exception e) {
+            System.err.println("[MythicDungeons] Error finding procedural spawn: " + e.getMessage());
+            e.printStackTrace();
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Alternative forceTeleport implementation that works better with Youer
+     * This replaces the original MythicDungeons forceTeleport method
+     */
+    public static void forceTeleport2(Entity entity, Location target) {
+        if (entity == null || target == null) {
+            System.err.println("[MythicDungeons] forceTeleport2: null entity or target");
+            return;
+        }
+        
+        // For procedural dungeons, we need to find the actual spawn location
+        if (target.getWorld().getName().contains("deneme") || target.getWorld().getName().contains("dungeon")) {
+            System.out.println("[MythicDungeons] forceTeleport2: Detected dungeon world, using enhanced teleport");
+            
+            // First try the new procedural spawn finder
+            Location proceduralSpawn = findProceduralDungeonSpawn(target.getWorld());
+            if (proceduralSpawn != null) {
+                System.out.println("[MythicDungeons] forceTeleport2: Found procedural dungeon spawn!");
+                target = proceduralSpawn;
+            } else {
+                // Try to get the actual spawn from the dungeon API
+                Location actualSpawn = getSpawnLocationFromMythicDungeons(target.getWorld());
+                if (actualSpawn != null) {
+                    System.out.println("[MythicDungeons] forceTeleport2: Found actual spawn from API");
+                    target = actualSpawn;
+                } else {
+                    // Use our enhanced search
+                    Location safeLocation = findSafeGroundAtTarget(target);
+                    if (safeLocation != null) {
+                        System.out.println("[MythicDungeons] forceTeleport2: Using safe ground location");
+                        target = safeLocation;
+                    }
+                }
+            }
+        }
+        
+        // Use our safe teleport mechanism with retries
+        safeTeleportWithRetries(entity, target).whenComplete((success, error) -> {
+            if (error != null) {
+                System.err.println("[MythicDungeons] forceTeleport2 failed: " + error.getMessage());
+            } else if (success) {
+                System.out.println("[MythicDungeons] forceTeleport2 successful");
+            } else {
+                System.err.println("[MythicDungeons] forceTeleport2 returned false");
+            }
+        });
     }
 }
